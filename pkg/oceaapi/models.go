@@ -70,3 +70,13 @@ type Local struct {
 		Usage                string  `json:"usage"`
 	} `json:"local"`
 }
+
+type Device struct {
+	AppareilID             string  `json:"appareilId"`
+	Date                   string  `json:"date"`
+	Emplacement            string  `json:"emplacement"`
+	Fluide                 string  `json:"fluide"`
+	NumeroCompteurAppareil string  `json:"numeroCompteurAppareil"`
+	Unite                  string  `json:"unite"`
+	ValeurIndex            float64 `json:"valeurIndex"`
+}

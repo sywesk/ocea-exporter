@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/sywesk/ocea-exporter/oceaapi"
+	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
 	"log"
 )
 
@@ -33,6 +33,15 @@ func fetchCounters(client oceaapi.APIClient) (Counters, error) {
 
 	localID := resident.Occupations[0].LogementID
 	log.Printf("fetch: found local %s", localID)
+
+	devices, err := client.GetDevices(localID)
+	if err != nil {
+		return Counters{}, fmt.Errorf("failed to get devices for local %s: %w", localID, err)
+	}
+
+	for _, device := range devices {
+		log.Printf("device: serial=%s fluid=%s value=%f", device.NumeroCompteurAppareil, device.Fluide, device.ValeurIndex)
+	}
 
 	local, err := client.GetLocal(localID)
 	if err != nil {

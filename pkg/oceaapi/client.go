@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 const (
@@ -63,6 +64,36 @@ func (o APIClient) GetFluidDashboard(localID, fluid string) (Dashboard, error) {
 	return dashboard, nil
 }
 
+type localIndexDemandRequest struct {
+	LocalID string `json:"localId"`
+	Token   string `json:"token"`
+}
+
+func (o APIClient) GetDevices(localID string) ([]Device, error) {
+	token := ""
+	date := time.Now().Format("2006-01-02")
+
+	err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/indexes/token?dateDemande="+date+"T00:00:00.000Z&raisonConforme=RealisationEtatDesLieux", nil, &token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token: %w", err)
+	} else if token == "" {
+		return nil, fmt.Errorf("failed to get token: (empty)")
+	}
+
+	var deviceList []Device
+	indexRequest := localIndexDemandRequest{
+		LocalID: localID,
+		Token:   token,
+	}
+
+	err = o.do("POST", OCEAAPIBaseURL+"/local/indexes/demande", &indexRequest, &deviceList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token: %w", err)
+	}
+
+	return deviceList, nil
+}
+
 func (o APIClient) do(method, url string, request, response interface{}) error {
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
@@ -76,6 +107,7 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 		}
 
 		req.Body = io.NopCloser(bytes.NewReader(reqBytes))
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	token, err := o.tokenProvider.GetToken()
@@ -84,6 +116,10 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
+
+	if response != nil {
+		req.Header.Set("Accept", "application/json")
+	}
 
 	resp, err := o.client.Do(req)
 	if err != nil {

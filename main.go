@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/sywesk/ocea-exporter/oceaapi"
-	"github.com/sywesk/ocea-exporter/oceaauth"
+	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
+	"github.com/sywesk/ocea-exporter/pkg/oceaauth"
 	"go.uber.org/zap"
 	"os"
 	"strings"
