@@ -6,15 +6,18 @@ It currently only supports prometheus, but will soon support home assistant by u
 
 ## Configuration
 
-The configuration is a short YAML file. Here's the reference:
+The configuration is a short YAML file. Here's the reference (with the default values) :
 
 ```yaml
-username: test@gmail.com
-password: your_account_password
+username: 
+password: 
+poll_interval: 30m
 prometheus: 
-  enabled: true
+  enabled: false
   listen_addr: 127.0.0.1:9001
 ```
+
+Note: `poll_interval` is a `time.Duration` string.
 
 ## Installing
 
