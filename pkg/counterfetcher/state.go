@@ -3,16 +3,35 @@ package counterfetcher
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
 	"go.uber.org/zap"
 	"os"
+	"path"
 )
 
 type state struct {
 	CounterStates []counterState `json:"counterStates"`
+	AccountData   rawAccountData `json:"accountData"`
 }
 
-func (s state) save(path string) error {
-	// TODO
+func (s state) save(filePath string) error {
+	bytes, err := json.Marshal(s)
+	if err != nil {
+		return fmt.Errorf("failed to marshal state: %w", err)
+	}
+
+	err = os.MkdirAll(path.Dir(filePath), 0600)
+	if err != nil {
+		return fmt.Errorf("failed to mkdirall: %w", err)
+	}
+
+	err = os.WriteFile(filePath, bytes, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to write state: %w", err)
+	}
+
+	zap.L().Info("state successfully written", zap.String("path", filePath))
+
 	return nil
 }
 
@@ -27,9 +46,9 @@ func (s state) save(path string) error {
 // We also need to periodically save the current relative index (aka LastYtDRelativeIndex) in order to detect when the
 // value is reset at the beginning of the year.
 type counterState struct {
-	AbsoluteIndex        float64 `json:"absoluteIndex"`
-	YtDRelativeIndex     float64 `json:"ytDRelativeIndex"`
-	LastYtDRelativeIndex float64 `json:"lastYtDRelativeIndex"`
+	Fluid         string  `json:"fluid"`
+	AbsoluteIndex float64 `json:"absoluteIndex"`
+	AnnualIndex   float64 `json:"annualIndex"`
 }
 
 func loadState(path string) (state, error) {
@@ -49,5 +68,14 @@ func loadState(path string) (state, error) {
 		return state{}, fmt.Errorf("failed to unmarshal state file: %w", err)
 	}
 
+	zap.L().Info("state successfully loaded", zap.String("path", path))
+
 	return diskState, nil
+}
+
+type rawAccountData struct {
+	Resident   oceaapi.Resident    `json:"resident"`
+	Local      oceaapi.Local       `json:"local"`
+	Dashboards []oceaapi.Dashboard `json:"dashboards"`
+	Devices    []oceaapi.Device    `json:"devices"`
 }

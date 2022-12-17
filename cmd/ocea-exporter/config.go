@@ -7,14 +7,17 @@ import (
 )
 
 type config struct {
-	Username    string `yaml:"username"`
-	Password    string `yaml:"password"`
-	MetricsAddr string `yaml:"metrics_addr"`
+	Username   string `yaml:"username"`
+	Password   string `yaml:"password"`
+	Prometheus struct {
+		Enabled    bool   `json:"enabled"`
+		ListenAddr string `yaml:"listen_addr"`
+	} `json:"prometheus"`
 }
 
 var globalConfig config
 
-func LoadConfig(path string) error {
+func loadConfig(path string) error {
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
@@ -28,6 +31,6 @@ func LoadConfig(path string) error {
 	return nil
 }
 
-func GetConfig() config {
+func getConfig() config {
 	return globalConfig
 }

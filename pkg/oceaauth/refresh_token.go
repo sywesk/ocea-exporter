@@ -3,7 +3,7 @@ package oceaauth
 import (
 	"fmt"
 	"github.com/google/uuid"
-	"log"
+	"go.uber.org/zap"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,7 +25,7 @@ func (o *TokenProvider) refreshToken() error {
 		return fmt.Errorf("failed to exchange token: %w", err)
 	}
 
-	log.Printf("auth: got token from refresh")
+	zap.L().Info("auth: got token from refresh")
 	return nil
 }
 

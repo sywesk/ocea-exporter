@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"io"
-	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -94,7 +94,7 @@ func (o *TokenProvider) getTokenFromCredentials() error {
 		return fmt.Errorf("failed to exchange code: %w", err)
 	}
 
-	log.Printf("auth: got token from credentials")
+	zap.L().Info("auth: got token from credentials")
 	return nil
 }
 
