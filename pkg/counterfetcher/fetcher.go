@@ -90,13 +90,6 @@ func (c *CounterFetcher) worker() {
 			c.ready = true
 		}
 
-		if err == nil {
-			fmt.Printf("#################################\n")
-			for _, counter := range c.state.CounterStates {
-				fmt.Printf("### fluid: %s index: %f yoyindex: %f \n", counter.Fluid, counter.AbsoluteIndex, counter.AnnualIndex)
-			}
-		}
-
 		<-t.C
 	}
 }
