@@ -28,7 +28,7 @@ type Settings struct {
 	StateFileLocation string
 	Username          string
 	Password          string
-	FetchInterval     time.Duration
+	PollInterval      time.Duration
 }
 
 func New(settings Settings) (*CounterFetcher, error) {
@@ -79,7 +79,7 @@ func (c *CounterFetcher) worker() {
 		}
 	}()
 
-	t := time.NewTicker(30 * time.Minute)
+	t := time.NewTicker(c.settings.PollInterval)
 
 	for {
 		err := c.fetchCounters()

@@ -42,19 +42,19 @@ func main() {
 }
 
 func buildFetcherSettings() counterfetcher.Settings {
-	interval := getConfig().FetchInterval
+	interval := getConfig().PollInterval
 	if interval == "" {
 		interval = "30m"
 	}
 
 	intervalDuration, err := time.ParseDuration(interval)
 	if err != nil {
-		zap.L().Fatal("invalid featch_interval", zap.String("input", interval), zap.Error(err))
+		zap.L().Fatal("invalid poll_interval", zap.String("input", interval), zap.Error(err))
 	}
 
 	return counterfetcher.Settings{
-		Username:      getConfig().Username,
-		Password:      getConfig().Password,
-		FetchInterval: intervalDuration,
+		Username:     getConfig().Username,
+		Password:     getConfig().Password,
+		PollInterval: intervalDuration,
 	}
 }

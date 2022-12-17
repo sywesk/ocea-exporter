@@ -7,10 +7,10 @@ import (
 )
 
 type config struct {
-	Username      string `yaml:"username"`
-	Password      string `yaml:"password"`
-	FetchInterval string `yaml:"fetch_interval"`
-	Prometheus    struct {
+	Username     string `yaml:"username"`
+	Password     string `yaml:"password"`
+	PollInterval string `yaml:"poll_interval"`
+	Prometheus   struct {
 		Enabled    bool   `json:"enabled"`
 		ListenAddr string `yaml:"listen_addr"`
 	} `json:"prometheus"`
