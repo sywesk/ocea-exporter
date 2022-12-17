@@ -24,10 +24,7 @@ func main() {
 		zap.L().Fatal("failed to load configuration", zap.Error(err))
 	}
 
-	fetcher, err := counterfetcher.New(counterfetcher.Settings{
-		Username: getConfig().Username,
-		Password: getConfig().Password,
-	})
+	fetcher, err := counterfetcher.New(buildFetcherSettings())
 	if err != nil {
 		zap.L().Fatal("failed to create a counter fetcher", zap.Error(err))
 	}
@@ -37,9 +34,27 @@ func main() {
 		zap.L().Fatal("failed to start counter fetcher", zap.Error(err))
 	}
 
-	setupMetricsHandler()
+	setupPrometheusMetricsHandler()
 
 	for {
 		time.Sleep(1 * time.Minute)
+	}
+}
+
+func buildFetcherSettings() counterfetcher.Settings {
+	interval := getConfig().FetchInterval
+	if interval == "" {
+		interval = "30m"
+	}
+
+	intervalDuration, err := time.ParseDuration(interval)
+	if err != nil {
+		zap.L().Fatal("invalid featch_interval", zap.String("input", interval), zap.Error(err))
+	}
+
+	return counterfetcher.Settings{
+		Username:      getConfig().Username,
+		Password:      getConfig().Password,
+		FetchInterval: intervalDuration,
 	}
 }

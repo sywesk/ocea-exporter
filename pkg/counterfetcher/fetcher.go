@@ -28,6 +28,7 @@ type Settings struct {
 	StateFileLocation string
 	Username          string
 	Password          string
+	FetchInterval     time.Duration
 }
 
 func New(settings Settings) (*CounterFetcher, error) {

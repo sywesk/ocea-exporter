@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-func setupMetricsHandler() {
+func setupPrometheusMetricsHandler() {
 	if !getConfig().Prometheus.Enabled {
 		zap.L().Info("prometheus exporter is disabled")
 		return
