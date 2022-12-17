@@ -268,17 +268,20 @@ func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) error {
 			return errDashboardMissing
 		}
 
-		if dashboard.ConsoCumuleeAnneeCourante < state.AnnualIndex {
+		currentAnnualIndex := round3(dashboard.ConsoCumuleeAnneeCourante)
+		lastAnnualIndex := round3(state.AnnualIndex)
+
+		if currentAnnualIndex < lastAnnualIndex {
 			zap.L().Info("yearly counter was reset, triggering a full refresh")
 			return errYearlyCounterReset
 		}
 
-		if dashboard.ConsoCumuleeAnneeCourante == state.AnnualIndex {
+		if currentAnnualIndex == lastAnnualIndex {
 			zap.L().Debug("yearly counter hasn't changed", zap.String("fluid", state.Fluid))
 		}
 
-		c.state.CounterStates[i].AbsoluteIndex += dashboard.ConsoCumuleeAnneeCourante - state.AnnualIndex
-		c.state.CounterStates[i].AnnualIndex = dashboard.ConsoCumuleeAnneeCourante
+		c.state.CounterStates[i].AbsoluteIndex = round3(c.state.CounterStates[i].AbsoluteIndex + round3(currentAnnualIndex-lastAnnualIndex))
+		c.state.CounterStates[i].AnnualIndex = currentAnnualIndex
 
 		index.WithLabelValues(state.Fluid, localID).Set(c.state.CounterStates[i].AbsoluteIndex)
 	}
