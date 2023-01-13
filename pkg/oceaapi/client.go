@@ -69,9 +69,14 @@ type localIndexDemandRequest struct {
 	Token   string `json:"token"`
 }
 
-func (o APIClient) GetDevices(localID string) ([]Device, error) {
+func (o APIClient) GetDevices(localID string, statementDate time.Time) ([]Device, error) {
 	token := ""
-	date := time.Now().Format("2006-01-02")
+
+	t := statementDate
+	if t.IsZero() {
+		t = time.Now()
+	}
+	date := t.Format("2006-01-02")
 
 	err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/indexes/token?dateDemande="+date+"T00:00:00.000Z&raisonConforme=RealisationEtatDesLieux", nil, &token)
 	if err != nil {

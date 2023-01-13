@@ -14,6 +14,7 @@ import (
 var (
 	errDashboardMissing   = fmt.Errorf("dashboard missing")
 	errYearlyCounterReset = fmt.Errorf("yearly counter was reset")
+	errMissingDevices     = fmt.Errorf("missing devices")
 )
 
 type CounterFetcher struct {
@@ -57,6 +58,7 @@ func (c *CounterFetcher) Start() error {
 	tokenProvider := oceaauth.NewTokenProvider(c.settings.Username, c.settings.Password)
 	c.apiClient = oceaapi.NewClient(tokenProvider)
 
+	// If the state is empty, then we need to fetch everything first.
 	if c.state.AccountData.Resident.NomClient == "" {
 		err = c.fetchInitialState()
 		if err != nil {
@@ -104,7 +106,7 @@ func (c *CounterFetcher) fetchCounters() error {
 		if err != nil {
 			return fmt.Errorf("failed to get dashboard for local %s and fluid %s: %w", localID, fluid.Fluide, err)
 		}
-		zap.L().Info("fetched fluid", zap.String("fluid", fluid.Fluide))
+		zap.L().Info("fetched fluid", zap.String("fluid", fluid.Fluide), zap.String("date", dashboard.DateDerniereReleve))
 
 		dashboards = append(dashboards, dashboard)
 	}
@@ -112,23 +114,25 @@ func (c *CounterFetcher) fetchCounters() error {
 	c.state.AccountData.Dashboards = dashboards
 
 	err := c.updateCounters(dashboards)
-	if err != nil {
-		if errors.Is(err, errDashboardMissing) {
-			err = c.fetchInitialState()
-			if err != nil {
-				return fmt.Errorf("updateCounters requested a full reset, but it failed: %w", err)
-			}
+	if errors.Is(err, errDashboardMissing) {
+		err = c.fetchInitialState()
+		if err != nil {
+			return fmt.Errorf("updateCounters requested a full reset, but it failed: %w", err)
+		}
 
+		return nil
+	} else if errors.Is(err, errYearlyCounterReset) {
+		err = c.resetCounters(dashboards)
+		if err == nil {
 			return nil
-		} else if errors.Is(err, errYearlyCounterReset) {
-			err = c.resetCounters(dashboards)
-			if err != nil {
-				return fmt.Errorf("updateCounters requested a counter reset, but it failed: %w", err)
-			}
-
+		}
+		if errors.Is(err, errMissingDevices) {
+			zap.L().Debug("some devices were missing, making the counter reset impossible. this is certainly because there were no measurements for the missing devices today, and we need to wait for them. this will be retried at the next check.")
 			return nil
 		}
 
+		return fmt.Errorf("updateCounters requested a counter reset, but it failed: %w", err)
+	} else if err != nil {
 		return fmt.Errorf("failed to update counters: %w", err)
 	}
 
@@ -145,7 +149,7 @@ func (c *CounterFetcher) fetchCounters() error {
 func (c *CounterFetcher) resetCounters(dashboards []oceaapi.Dashboard) error {
 	localID := c.state.AccountData.Local.Local.ID
 
-	devices, err := c.apiClient.GetDevices(localID)
+	devices, err := c.fetchDevices(localID, len(dashboards))
 	if err != nil {
 		return fmt.Errorf("failed to get devices for local %s: %w", localID, err)
 	}
@@ -189,20 +193,20 @@ func (c *CounterFetcher) fetchInitialState() error {
 			zap.Int("occupation_count", len(resident.Occupations)))
 	}
 
-	devices, err := c.apiClient.GetDevices(localID)
-	if err != nil {
-		return fmt.Errorf("failed to get devices for local %s: %w", localID, err)
-	}
-	zap.L().Info("fetched devices for local",
-		zap.String("local_id", localID),
-		zap.Int("device_count", len(devices)))
-
 	local, err := c.apiClient.GetLocal(localID)
 	if err != nil {
 		return fmt.Errorf("failed to get local %s: %w", localID, err)
 	}
 	zap.L().Info("fetched local",
 		zap.String("local_id", localID))
+
+	devices, err := c.fetchDevices(localID, len(local.FluidesRestitues))
+	if err != nil {
+		return fmt.Errorf("failed to get devices for local %s: %w", localID, err)
+	}
+	zap.L().Info("fetched devices for local",
+		zap.String("local_id", localID),
+		zap.Int("device_count", len(devices)))
 
 	if len(local.FluidesRestitues) == 0 {
 		return fmt.Errorf("no fluid found for local %s", localID)
@@ -243,9 +247,51 @@ func (c *CounterFetcher) fetchInitialState() error {
 	return nil
 }
 
+func (c *CounterFetcher) fetchDevices(localID string, expectedDeviceCount int) ([]oceaapi.Device, error) {
+	devices, err := c.apiClient.GetDevices(localID, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get devices: %w", err)
+	}
+
+	if len(devices) == expectedDeviceCount {
+		return devices, nil
+	}
+
+	yesterdayDevices, err := c.apiClient.GetDevices(localID, time.Now().AddDate(0, 0, -1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get yesterday devices: %w", err)
+	}
+
+	var completeList []oceaapi.Device
+
+	// The current list doesn't contain all devices, so we're trying to back-fill the missing ones from the previous
+	// statement (yesterdayDevices).
+	for _, olderDevice := range yesterdayDevices {
+		found := false
+		for _, newerDevice := range devices {
+			if olderDevice.AppareilID == newerDevice.AppareilID {
+				completeList = append(completeList, newerDevice)
+				found = true
+				break
+			}
+		}
+
+		if found {
+			continue
+		}
+
+		completeList = append(completeList, olderDevice)
+	}
+
+	if len(completeList) != expectedDeviceCount {
+		return nil, fmt.Errorf("not enough devices")
+	}
+
+	return completeList, nil
+}
+
 // updateCounters updates the counters by applying adding the difference between the last yearly index and the current
 // one to the annual index. If the yearly counter is reset, we need to fetch the absolute indexes again.
-// Returns true if we need to fetch the absolute indexes, otherwise returns false.
 func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) error {
 	localID := c.state.AccountData.Local.Local.ID
 
