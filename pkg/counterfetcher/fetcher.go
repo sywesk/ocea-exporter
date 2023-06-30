@@ -3,12 +3,13 @@ package counterfetcher
 import (
 	"errors"
 	"fmt"
-	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
-	"github.com/sywesk/ocea-exporter/pkg/oceaauth"
-	"go.uber.org/zap"
 	"os"
 	"path"
 	"time"
+
+	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
+	"github.com/sywesk/ocea-exporter/pkg/oceaauth"
+	"go.uber.org/zap"
 )
 
 var (
@@ -17,6 +18,9 @@ var (
 	errMissingDevices     = fmt.Errorf("missing devices")
 )
 
+/*
+CounterFetcher is the abstraction that will maintain up-to-date counter values.
+*/
 type CounterFetcher struct {
 	settings  Settings
 	state     state
@@ -113,8 +117,10 @@ func (c *CounterFetcher) fetchCounters() error {
 
 	c.state.AccountData.Dashboards = dashboards
 
-	err := c.updateCounters(dashboards)
+	countersUpdated, err := c.updateCounters(dashboards)
 	if errors.Is(err, errDashboardMissing) {
+		// errDashboardMissing means that we've got a counter that doesn't have a counter anymore. This shouldn't happen on an account.
+		// To solve the discrepancy, we must reset the state and and fetch everything again.
 		err = c.fetchInitialState()
 		if err != nil {
 			return fmt.Errorf("updateCounters requested a full reset, but it failed: %w", err)
@@ -122,23 +128,29 @@ func (c *CounterFetcher) fetchCounters() error {
 
 		return nil
 	} else if errors.Is(err, errYearlyCounterReset) {
+		// We use "increasing" yearly counters to avoid fetching counter indexes too often (they are behind a 2nd authentication,
+		// and I fear that it might get detected if called too often). But when they are reset on january first, we must start from
+		// a clean state again to have a valid "yearly_counter / index" pair.
 		err = c.resetCounters(dashboards)
-		if err == nil {
-			return nil
-		}
 		if errors.Is(err, errMissingDevices) {
 			zap.L().Debug("some devices were missing, making the counter reset impossible. this is certainly because there were no measurements for the missing devices today, and we need to wait for them. this will be retried at the next check.")
 			return nil
+		} else if err != nil {
+			return fmt.Errorf("updateCounters requested a counter reset, but it failed: %w", err)
 		}
 
-		return fmt.Errorf("updateCounters requested a counter reset, but it failed: %w", err)
+		return nil
 	} else if err != nil {
 		return fmt.Errorf("failed to update counters: %w", err)
 	}
 
-	err = c.state.save(c.settings.StateFileLocation)
-	if err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
+	if countersUpdated {
+		err = c.state.save(c.settings.StateFileLocation)
+		if err != nil {
+			return fmt.Errorf("failed to save state: %w", err)
+		}
+	} else {
+		zap.L().Info("no counters were updated, skipping state update")
 	}
 
 	zap.L().Info("fetched counters")
@@ -290,9 +302,9 @@ func (c *CounterFetcher) fetchDevices(localID string, expectedDeviceCount int) (
 	return completeList, nil
 }
 
-// updateCounters updates the counters by applying adding the difference between the last yearly index and the current
+// updateCounters updates the counters by adding the difference between the last yearly index and the current
 // one to the annual index. If the yearly counter is reset, we need to fetch the absolute indexes again.
-func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) error {
+func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) (bool, error) {
 	localID := c.state.AccountData.Local.Local.ID
 
 	dashByFluid := map[string]oceaapi.Dashboard{}
@@ -300,12 +312,13 @@ func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) error {
 		dashByFluid[dashboard.Fluide] = dashboard
 	}
 
+	countersUpdated := false
 	for i, state := range c.state.CounterStates {
 		dashboard, ok := dashByFluid[state.Fluid]
 		if !ok {
 			zap.L().Warn("dashboard missing for counter", zap.String("fluid", state.Fluid))
 			// If we can't find the dashboard, we need to start again from a clear state.
-			return errDashboardMissing
+			return false, errDashboardMissing
 		}
 
 		currentAnnualIndex := round3(dashboard.ConsoCumuleeAnneeCourante)
@@ -313,7 +326,7 @@ func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) error {
 
 		if currentAnnualIndex < lastAnnualIndex {
 			zap.L().Info("yearly counter was reset, triggering a full refresh")
-			return errYearlyCounterReset
+			return false, errYearlyCounterReset
 		}
 
 		if currentAnnualIndex == lastAnnualIndex {
@@ -324,11 +337,12 @@ func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) error {
 		c.state.CounterStates[i].AnnualIndex = currentAnnualIndex
 
 		index.WithLabelValues(state.Fluid, localID).Set(c.state.CounterStates[i].AbsoluteIndex)
+		countersUpdated = true
 	}
 
 	zap.L().Info("updated counters")
 
-	return nil
+	return countersUpdated, nil
 }
 
 func (c *CounterFetcher) initializeCounters(dashboards []oceaapi.Dashboard, devices []oceaapi.Device) error {
