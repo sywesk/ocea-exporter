@@ -3,14 +3,15 @@ package counterfetcher
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
-	"go.uber.org/zap"
 	"os"
 	"path"
+
+	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
+	"go.uber.org/zap"
 )
 
 type state struct {
-	CounterStates []counterState `json:"counterStates"`
+	CounterStates []CounterState `json:"counterStates"`
 	AccountData   rawAccountData `json:"accountData"`
 }
 
@@ -35,7 +36,7 @@ func (s state) save(filePath string) error {
 	return nil
 }
 
-// counterState helps avoid getting the absolute indexes too often.
+// CounterState helps avoid getting the absolute indexes too often.
 // To do so, it remembers the pair (AbsoluteIndex, YtDRelativeIndex), which represents the cumulative value at a given
 // time and its corresponding year-to-date value, the latter of which isn't protected by a specific endpoint.
 // Then, to get the current absolute index, we subtract the state's year-to-date index to the current one, and add the
@@ -45,10 +46,18 @@ func (s state) save(filePath string) error {
 //
 // We also need to periodically save the current relative index (aka LastYtDRelativeIndex) in order to detect when the
 // value is reset at the beginning of the year.
-type counterState struct {
+type CounterState struct {
 	Fluid         string  `json:"fluid"`
 	AbsoluteIndex float64 `json:"absoluteIndex"`
 	AnnualIndex   float64 `json:"annualIndex"`
+}
+
+func (c CounterState) Clone() CounterState {
+	return CounterState{
+		Fluid:         c.Fluid,
+		AbsoluteIndex: c.AbsoluteIndex,
+		AnnualIndex:   c.AnnualIndex,
+	}
 }
 
 func loadState(path string) (state, error) {

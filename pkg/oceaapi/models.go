@@ -42,13 +42,15 @@ type Dashboard struct {
 	DateDerniereReleve        string  `json:"dateDerniereReleve"`
 }
 
+type Fluid struct {
+	Fluide           string `json:"fluide"`
+	TypeDistribution string `json:"typeDistribution"`
+	TypeReleve       string `json:"typeReleve"`
+}
+
 type Local struct {
-	FluidesRestitues []struct {
-		Fluide           string `json:"fluide"`
-		TypeDistribution string `json:"typeDistribution"`
-		TypeReleve       string `json:"typeReleve"`
-	} `json:"fluidesRestitues"`
-	Local struct {
+	FluidesRestitues []Fluid `json:"fluidesRestitues"`
+	Local            struct {
 		Adresse struct {
 			CodePostal string `json:"codePostal"`
 			Complement string `json:"complement"`
