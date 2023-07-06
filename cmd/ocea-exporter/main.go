@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/sywesk/ocea-exporter/pkg/counterfetcher"
+	"github.com/sywesk/ocea-exporter/pkg/homeassistant"
 	"go.uber.org/zap"
 	"os"
 	"time"
@@ -35,10 +36,29 @@ func main() {
 	}
 
 	setupPrometheusMetricsHandler()
+	startHomeAssistantIntegration(fetcher)
 
 	for {
 		time.Sleep(1 * time.Minute)
 	}
+}
+
+func startHomeAssistantIntegration(fetcher *counterfetcher.CounterFetcher) {
+	cfg := getConfig()
+
+	if !cfg.HomeAssistant.Enabled {
+		zap.L().Info("homeassistant integration is disabled")
+		return
+	}
+
+	ha, receiver := homeassistant.New(homeassistant.MQTTParams{
+		Host:     cfg.HomeAssistant.BrokerAddr,
+		Username: cfg.HomeAssistant.Username,
+		Password: cfg.HomeAssistant.Password,
+	})
+	ha.Start()
+
+	fetcher.RegisterListener(receiver)
 }
 
 func buildFetcherSettings() counterfetcher.Settings {

@@ -12,6 +12,10 @@ func setupPrometheusMetricsHandler() {
 		return
 	}
 
+	go listenProm()
+}
+
+func listenProm() {
 	listenAddr := getConfig().Prometheus.ListenAddr
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:9001"

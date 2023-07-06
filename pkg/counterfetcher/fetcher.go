@@ -27,7 +27,7 @@ type CounterFetcher struct {
 	healthy   bool // Indicates if the last refresh of the counters was successful
 	ready     bool // Indicates if the counters are ready
 	apiClient oceaapi.APIClient
-	listeners [](chan<- []CounterState)
+	listeners []chan<- Notification
 }
 
 type Settings struct {
@@ -52,7 +52,7 @@ func New(settings Settings) (*CounterFetcher, error) {
 	}, nil
 }
 
-func (c *CounterFetcher) RegisterListener(listener chan<- []CounterState) {
+func (c *CounterFetcher) RegisterListener(listener chan<- Notification) {
 	c.listeners = append(c.listeners, listener)
 }
 
@@ -109,16 +109,24 @@ func (c *CounterFetcher) worker() {
 	}
 }
 
+type Notification struct {
+	CounterStates []CounterState
+}
+
 func (c *CounterFetcher) notifyListeners() {
-	var payload []CounterState
+	var states []CounterState
 
 	for _, state := range c.state.CounterStates {
-		payload = append(payload, state.Clone())
+		states = append(states, state.Clone())
+	}
+
+	notif := Notification{
+		CounterStates: states,
 	}
 
 	for _, listener := range c.listeners {
 		select {
-		case listener <- payload:
+		case listener <- notif:
 			continue
 		default:
 			zap.L().Warn("failed to notify a listener: channel blocked")
@@ -147,7 +155,7 @@ func (c *CounterFetcher) fetchCounters() error {
 	countersUpdated, err := c.updateCounters(dashboards)
 	if errors.Is(err, errDashboardMissing) {
 		// errDashboardMissing means that we've got a counter that doesn't have a counter anymore. This shouldn't happen on an account.
-		// To solve the discrepancy, we must reset the state and and fetch everything again.
+		// To solve the discrepancy, we must reset the state and fetch everything again.
 		err = c.fetchInitialState()
 		if err != nil {
 			return fmt.Errorf("updateCounters requested a full reset, but it failed: %w", err)
@@ -394,6 +402,7 @@ func (c *CounterFetcher) initializeCounters(dashboards []oceaapi.Dashboard, devi
 			Fluid:         device.Fluide,
 			AbsoluteIndex: device.ValeurIndex,
 			AnnualIndex:   dashboard.ConsoCumuleeAnneeCourante,
+			SerialNumber:  device.NumeroCompteurAppareil,
 		}
 	}
 

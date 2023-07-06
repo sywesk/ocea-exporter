@@ -11,9 +11,15 @@ type config struct {
 	Password     string `yaml:"password"`
 	PollInterval string `yaml:"poll_interval"`
 	Prometheus   struct {
-		Enabled    bool   `json:"enabled"`
+		Enabled    bool   `yaml:"enabled"`
 		ListenAddr string `yaml:"listen_addr"`
-	} `json:"prometheus"`
+	} `yaml:"prometheus"`
+	HomeAssistant struct {
+		Enabled    bool   `yaml:"enabled"`
+		BrokerAddr string `yaml:"broker_addr"`
+		Username   string `yaml:"username"`
+		Password   string `yaml:"password"`
+	} `yaml:"home_assistant"`
 }
 
 var globalConfig config

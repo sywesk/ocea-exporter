@@ -50,6 +50,7 @@ type CounterState struct {
 	Fluid         string  `json:"fluid"`
 	AbsoluteIndex float64 `json:"absoluteIndex"`
 	AnnualIndex   float64 `json:"annualIndex"`
+	SerialNumber  string  `json:"serialNumber"`
 }
 
 func (c CounterState) Clone() CounterState {
@@ -57,6 +58,7 @@ func (c CounterState) Clone() CounterState {
 		Fluid:         c.Fluid,
 		AbsoluteIndex: c.AbsoluteIndex,
 		AnnualIndex:   c.AnnualIndex,
+		SerialNumber:  c.SerialNumber,
 	}
 }
 
