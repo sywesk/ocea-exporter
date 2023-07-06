@@ -1,0 +1,9 @@
+version: "3"
+
+services:
+  ocea-exporter:
+    image: "sywesk/ocea-exporter:0.3.0"
+    container_name: "ocea-exporter"
+    restart: unless-stopped
+    volumes:
+      - "./config.yaml:/app/config.yaml:ro"
