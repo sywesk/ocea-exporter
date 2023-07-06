@@ -15,6 +15,11 @@ poll_interval: 30m
 prometheus: 
   enabled: false
   listen_addr: 127.0.0.1:9001
+home_assistant:
+  enabled: false
+  broker_addr: 
+  username: 
+  password: 
 ```
 
 Note: `poll_interval` is a `time.Duration` string.
