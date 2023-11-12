@@ -5,14 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
-	"go.uber.org/zap"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 /*
@@ -240,7 +241,7 @@ func (o *TokenProvider) getAuthorizePage(requestId string, challengeHash string)
 	q.Set("response_mode", "fragment")
 	q.Set("response_type", "code")
 	q.Set("x-client-SKU", "msal.js.browser")
-	q.Set("x-client-VER", "2.28.1")
+	q.Set("x-client-VER", "3.1.0")
 	q.Set("client_info", "1")
 	q.Set("code_challenge", challengeHash)
 	q.Set("code_challenge_method", "S256")
@@ -352,6 +353,11 @@ func extractAuthCode(resp *http.Response) (authCodeResponse, error) {
 	values, err := url.ParseQuery(redirectURL.Fragment)
 	if err != nil {
 		return authCodeResponse{}, fmt.Errorf("failed to parse location header fragment: %w", err)
+	}
+
+	if values.Get("code") == "" {
+		body, _ := io.ReadAll(resp.Body)
+		return authCodeResponse{}, fmt.Errorf("auth code is empty. please make sure that your username and password are valid (response body: %s)", string(body))
 	}
 
 	return authCodeResponse{

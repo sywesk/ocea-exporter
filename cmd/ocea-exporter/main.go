@@ -1,11 +1,13 @@
 package main
 
 import (
+	"github.com/davecgh/go-spew/spew"
+	"os"
+	"time"
+
 	"github.com/sywesk/ocea-exporter/pkg/counterfetcher"
 	"github.com/sywesk/ocea-exporter/pkg/homeassistant"
 	"go.uber.org/zap"
-	"os"
-	"time"
 )
 
 func main() {
@@ -16,14 +18,17 @@ func main() {
 
 	zap.ReplaceGlobals(logger)
 
-	if len(os.Args) != 2 {
-		println("usage: ocea-exporter <config file>")
+	if len(os.Args) >= 3 {
+		println("usage: ocea-exporter [config_file]")
+		println("  config_file: optional path to a configuration file")
 		os.Exit(1)
 	}
 
-	if err := loadConfig(os.Args[1]); err != nil {
+	if err := loadConfig(os.Args[1:]...); err != nil {
 		zap.L().Fatal("failed to load configuration", zap.Error(err))
 	}
+
+	spew.Dump(getConfig())
 
 	fetcher, err := counterfetcher.New(buildFetcherSettings())
 	if err != nil {
@@ -62,19 +67,15 @@ func startHomeAssistantIntegration(fetcher *counterfetcher.CounterFetcher) {
 }
 
 func buildFetcherSettings() counterfetcher.Settings {
-	interval := getConfig().PollInterval
-	if interval == "" {
-		interval = "30m"
-	}
-
-	intervalDuration, err := time.ParseDuration(interval)
+	intervalDuration, err := time.ParseDuration(getConfig().PollInterval)
 	if err != nil {
-		zap.L().Fatal("invalid poll_interval", zap.String("input", interval), zap.Error(err))
+		zap.L().Fatal("invalid poll_interval", zap.String("input", getConfig().PollInterval), zap.Error(err))
 	}
 
 	return counterfetcher.Settings{
-		Username:     getConfig().Username,
-		Password:     getConfig().Password,
-		PollInterval: intervalDuration,
+		StateFilePath: getConfig().StateFilePath,
+		Username:      getConfig().Username,
+		Password:      getConfig().Password,
+		PollInterval:  intervalDuration,
 	}
 }

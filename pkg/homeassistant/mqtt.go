@@ -108,10 +108,14 @@ func (m *MQTT) publishSensorValues(notif counterfetcher.Notification) {
 }
 
 func (m *MQTT) buildClient() (mqtt.Client, error) {
-	clientOptions := mqtt.NewClientOptions().
-		SetUsername(m.params.Username).
-		SetPassword(m.params.Password).
-		AddBroker(fmt.Sprintf("tcp://%s", m.params.Host))
+	clientOptions := mqtt.NewClientOptions().AddBroker(fmt.Sprintf("tcp://%s", m.params.Host))
+
+	if m.params.Password != "" {
+		clientOptions = clientOptions.SetPassword(m.params.Password)
+	}
+	if m.params.Username != "" {
+		clientOptions = clientOptions.SetUsername(m.params.Username)
+	}
 
 	client := mqtt.NewClient(clientOptions)
 

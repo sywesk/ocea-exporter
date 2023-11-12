@@ -3,8 +3,6 @@ package counterfetcher
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path"
 	"time"
 
 	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
@@ -31,20 +29,15 @@ type CounterFetcher struct {
 }
 
 type Settings struct {
-	StateFileLocation string
-	Username          string
-	Password          string
-	PollInterval      time.Duration
+	StateFilePath string
+	Username      string
+	Password      string
+	PollInterval  time.Duration
 }
 
 func New(settings Settings) (*CounterFetcher, error) {
-	if settings.StateFileLocation == "" {
-		dir, err := os.UserConfigDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get user config dir: %w", err)
-		}
-
-		settings.StateFileLocation = path.Join(dir, "ocea-exporter", "state.json")
+	if settings.StateFilePath == "" {
+		return nil, fmt.Errorf("empty state file location")
 	}
 
 	return &CounterFetcher{
@@ -59,7 +52,7 @@ func (c *CounterFetcher) RegisterListener(listener chan<- Notification) {
 func (c *CounterFetcher) Start() error {
 	var err error
 
-	c.state, err = loadState(c.settings.StateFileLocation)
+	c.state, err = loadState(c.settings.StateFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to load state: %w", err)
 	}
@@ -117,6 +110,9 @@ func (c *CounterFetcher) notifyListeners() {
 	var states []CounterState
 
 	for _, state := range c.state.CounterStates {
+		clonedState := state.Clone()
+		clonedState.AnnualIndex = round3(clonedState.AnnualIndex)
+		clonedState.AbsoluteIndex = round3(clonedState.AbsoluteIndex)
 		states = append(states, state.Clone())
 	}
 
@@ -138,7 +134,7 @@ func (c *CounterFetcher) updateCounterMetrics() {
 	localID := c.state.AccountData.Local.Local.ID
 
 	for _, state := range c.state.CounterStates {
-		index.WithLabelValues(state.Fluid, localID).Set(state.AbsoluteIndex)
+		index.WithLabelValues(state.Fluid, localID).Set(round3(state.AbsoluteIndex))
 	}
 }
 
@@ -149,7 +145,6 @@ func (c *CounterFetcher) fetchCounters() error {
 	if err != nil {
 		return err
 	}
-
 	c.state.AccountData.Dashboards = dashboards
 
 	countersUpdated, err := c.updateCounters(dashboards)
@@ -180,7 +175,7 @@ func (c *CounterFetcher) fetchCounters() error {
 	}
 
 	if countersUpdated {
-		err = c.state.save(c.settings.StateFileLocation)
+		err = c.state.save(c.settings.StateFilePath)
 		if err != nil {
 			return fmt.Errorf("failed to save state: %w", err)
 		}
@@ -211,7 +206,7 @@ func (c *CounterFetcher) resetCounters(dashboards []oceaapi.Dashboard) error {
 		return fmt.Errorf("failed to initialize counters: %w", err)
 	}
 
-	err = c.state.save(c.settings.StateFileLocation)
+	err = c.state.save(c.settings.StateFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to save state: %w", err)
 	}
@@ -359,8 +354,8 @@ func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) (bool, e
 			return false, errDashboardMissing
 		}
 
-		currentAnnualIndex := round3(dashboard.ConsoCumuleeAnneeCourante)
-		lastAnnualIndex := round3(state.AnnualIndex)
+		currentAnnualIndex := dashboard.ConsoCumuleeAnneeCourante
+		lastAnnualIndex := state.AnnualIndex
 
 		if currentAnnualIndex < lastAnnualIndex {
 			zap.L().Info("yearly counter was reset, triggering a full refresh")
@@ -372,7 +367,7 @@ func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) (bool, e
 			continue
 		}
 
-		c.state.CounterStates[i].AbsoluteIndex = round3(c.state.CounterStates[i].AbsoluteIndex + round3(currentAnnualIndex-lastAnnualIndex))
+		c.state.CounterStates[i].AbsoluteIndex = c.state.CounterStates[i].AbsoluteIndex + currentAnnualIndex - lastAnnualIndex
 		c.state.CounterStates[i].AnnualIndex = currentAnnualIndex
 		countersUpdated = true
 	}

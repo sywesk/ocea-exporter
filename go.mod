@@ -3,6 +3,7 @@ module github.com/sywesk/ocea-exporter
 go 1.18
 
 require (
+	github.com/davecgh/go-spew v1.1.1
 	github.com/eclipse/paho.mqtt.golang v1.4.2
 	github.com/google/uuid v1.3.0
 	github.com/prometheus/client_golang v1.14.0
