@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/davecgh/go-spew/spew"
 	"os"
 	"time"
 
@@ -27,8 +26,6 @@ func main() {
 	if err := loadConfig(os.Args[1:]...); err != nil {
 		zap.L().Fatal("failed to load configuration", zap.Error(err))
 	}
-
-	spew.Dump(getConfig())
 
 	fetcher, err := counterfetcher.New(buildFetcherSettings())
 	if err != nil {
