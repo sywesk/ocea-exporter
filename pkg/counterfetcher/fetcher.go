@@ -1,19 +1,12 @@
 package counterfetcher
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
 	"github.com/sywesk/ocea-exporter/pkg/oceaauth"
 	"go.uber.org/zap"
-)
-
-var (
-	errDashboardMissing   = fmt.Errorf("dashboard missing")
-	errYearlyCounterReset = fmt.Errorf("yearly counter was reset")
-	errMissingDevices     = fmt.Errorf("missing devices")
 )
 
 /*
@@ -111,7 +104,6 @@ func (c *CounterFetcher) notifyListeners() {
 
 	for _, state := range c.state.CounterStates {
 		clonedState := state.Clone()
-		clonedState.AnnualIndex = round3(clonedState.AnnualIndex)
 		clonedState.AbsoluteIndex = round3(clonedState.AbsoluteIndex)
 		states = append(states, state.Clone())
 	}
@@ -139,80 +131,27 @@ func (c *CounterFetcher) updateCounterMetrics() {
 }
 
 func (c *CounterFetcher) fetchCounters() error {
-	localID := c.state.AccountData.Local.Local.ID
-
-	dashboards, err := c.fetchDashboards(localID, c.state.AccountData.Local.FluidesRestitues)
+	devices, err := c.fetchDevices(c.state.AccountData.Local.Local.ID, len(c.state.AccountData.Local.FluidesRestitues))
 	if err != nil {
-		return err
+		return fmt.Errorf("fetching devices: %v", err)
 	}
-	c.state.AccountData.Dashboards = dashboards
+	c.state.AccountData.Devices = devices
 
-	countersUpdated, err := c.updateCounters(dashboards)
-	if errors.Is(err, errDashboardMissing) {
-		// errDashboardMissing means that we've got a counter that doesn't have a counter anymore. This shouldn't happen on an account.
-		// To solve the discrepancy, we must reset the state and fetch everything again.
-		err = c.fetchInitialState()
-		if err != nil {
-			return fmt.Errorf("updateCounters requested a full reset, but it failed: %w", err)
-		}
-
-		return nil
-	} else if errors.Is(err, errYearlyCounterReset) {
-		// We use "increasing" yearly counters to avoid fetching counter indexes too often (they are behind a 2nd authentication,
-		// and I fear that it might get detected if called too often). But when they are reset on january first, we must start from
-		// a clean state again to have a valid "yearly_counter / index" pair.
-		err = c.resetCounters(dashboards)
-		if errors.Is(err, errMissingDevices) {
-			zap.L().Debug("some devices were missing, making the counter reset impossible. this is certainly because there were no measurements for the missing devices today, and we need to wait for them. this will be retried at the next check.")
-			return nil
-		} else if err != nil {
-			return fmt.Errorf("updateCounters requested a counter reset, but it failed: %w", err)
-		}
-
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("failed to update counters: %w", err)
+	countersUpdated, err := c.updateCounters(c.state.AccountData.Devices)
+	if err != nil {
+		return fmt.Errorf("updating counters: %w", err)
 	}
 
 	if countersUpdated {
 		err = c.state.save(c.settings.StateFilePath)
 		if err != nil {
-			return fmt.Errorf("failed to save state: %w", err)
+			return fmt.Errorf("saving state: %w", err)
 		}
 	} else {
 		zap.L().Info("no counters were updated, skipping state update")
 	}
 
 	zap.L().Info("fetched counters")
-
-	return nil
-}
-
-func (c *CounterFetcher) resetCounters(dashboards []oceaapi.Dashboard) error {
-	localID := c.state.AccountData.Local.Local.ID
-
-	devices, err := c.fetchDevices(localID, len(dashboards))
-	if err != nil {
-		return fmt.Errorf("failed to get devices for local %s: %w", localID, err)
-	}
-	zap.L().Info("fetched devices for local",
-		zap.String("local_id", localID),
-		zap.Int("device_count", len(devices)))
-
-	c.state.AccountData.Devices = devices
-
-	err = c.initializeCounters(dashboards, devices)
-	if err != nil {
-		return fmt.Errorf("failed to initialize counters: %w", err)
-	}
-
-	err = c.state.save(c.settings.StateFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
-	}
-
-	zap.L().Info("reset counters")
-
 	return nil
 }
 
@@ -247,41 +186,19 @@ func (c *CounterFetcher) fetchInitialState() error {
 		return fmt.Errorf("no fluid found for local %s", localID)
 	}
 
-	dashboards, err := c.fetchDashboards(localID, local.FluidesRestitues)
-	if err != nil {
-		return err
-	}
-
-	c.state.AccountData = rawAccountData{
-		Resident:   resident,
-		Local:      local,
-		Dashboards: dashboards,
-	}
-
-	err = c.resetCounters(dashboards)
+	devices, err := c.fetchDevices(localID, len(local.FluidesRestitues))
 	if err != nil {
 		return fmt.Errorf("failed to reset counters: %w", err)
 	}
 
-	zap.L().Info("fetched initial state")
-	return nil
-}
-
-// fetchDashboards gets each fuild's dashboard (think pre-computed metrics).
-func (c *CounterFetcher) fetchDashboards(localID string, fluids []oceaapi.Fluid) ([]oceaapi.Dashboard, error) {
-	var dashboards []oceaapi.Dashboard
-
-	for _, fluid := range fluids {
-		dashboard, err := c.apiClient.GetFluidDashboard(localID, fluid.Fluide)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get dashboard for local %s and fluid %s: %w", localID, fluid.Fluide, err)
-		}
-
-		zap.L().Info("fetched fluid", zap.String("fluid", fluid.Fluide))
-		dashboards = append(dashboards, dashboard)
+	c.state.AccountData = rawAccountData{
+		Resident: resident,
+		Local:    local,
+		Devices:  devices,
 	}
 
-	return dashboards, nil
+	zap.L().Info("fetched initial state")
+	return nil
 }
 
 // fetchDevices will grab the actual index of all counters.
@@ -335,73 +252,37 @@ func (c *CounterFetcher) fetchDevices(localID string, expectedDeviceCount int) (
 	return completeList, nil
 }
 
-// updateCounters updates the counters by adding the difference between the last yearly index and the current
-// one to the annual index. If the yearly counter is reset, we need to fetch the absolute indexes again.
-//
-// Returns: true if at least one counter was updated, false otherwise.
-func (c *CounterFetcher) updateCounters(dashboards []oceaapi.Dashboard) (bool, error) {
-	dashByFluid := map[string]oceaapi.Dashboard{}
-	for _, dashboard := range dashboards {
-		dashByFluid[dashboard.Fluide] = dashboard
+func (c *CounterFetcher) updateCounters(devices []oceaapi.Device) (bool, error) {
+	if len(c.state.CounterStates) == 0 {
+		c.state.CounterStates = make([]CounterState, len(devices))
+		for i, device := range devices {
+			c.state.CounterStates[i] = CounterState{
+				Fluid:         device.Fluide,
+				AbsoluteIndex: device.ValeurIndex,
+				SerialNumber:  device.NumeroCompteurAppareil,
+			}
+		}
+		return true, nil
 	}
 
-	countersUpdated := false
+	deviceFluidToDevice := map[string]oceaapi.Device{}
+	for _, device := range devices {
+		deviceFluidToDevice[device.Fluide] = device
+	}
+
+	updated := false
 	for i, state := range c.state.CounterStates {
-		dashboard, ok := dashByFluid[state.Fluid]
+		device, ok := deviceFluidToDevice[state.Fluid]
 		if !ok {
-			zap.L().Warn("dashboard missing for counter", zap.String("fluid", state.Fluid))
-			// If we can't find the dashboard, we need to start again from a clear state.
-			return false, errDashboardMissing
+			return false, fmt.Errorf("no device for fluid %s", state.Fluid)
 		}
-
-		currentAnnualIndex := dashboard.ConsoCumuleeAnneeCourante
-		lastAnnualIndex := state.AnnualIndex
-
-		if currentAnnualIndex < lastAnnualIndex {
-			zap.L().Info("yearly counter was reset, triggering a full refresh")
-			return false, errYearlyCounterReset
-		}
-
-		if currentAnnualIndex == lastAnnualIndex {
-			zap.L().Debug("yearly counter hasn't changed", zap.String("fluid", state.Fluid))
+		if state.AbsoluteIndex == device.ValeurIndex {
 			continue
 		}
-
-		c.state.CounterStates[i].AbsoluteIndex = c.state.CounterStates[i].AbsoluteIndex + currentAnnualIndex - lastAnnualIndex
-		c.state.CounterStates[i].AnnualIndex = currentAnnualIndex
-		countersUpdated = true
+		c.state.CounterStates[i].AbsoluteIndex = device.ValeurIndex
+		updated = true
 	}
 
 	zap.L().Info("updated counters")
-	return countersUpdated, nil
-}
-
-// initializeCounters creates the CounterStates from the actual counter index (contained in devices) and
-// the annual index. This will later enable the incremental increase of the "full" index by looking at
-// increases from the annual index.
-func (c *CounterFetcher) initializeCounters(dashboards []oceaapi.Dashboard, devices []oceaapi.Device) error {
-	c.state.CounterStates = make([]CounterState, len(devices))
-
-	dashByFluid := map[string]oceaapi.Dashboard{}
-	for _, dashboard := range dashboards {
-		dashByFluid[dashboard.Fluide] = dashboard
-	}
-
-	for i, device := range devices {
-		dashboard, ok := dashByFluid[device.Fluide]
-		if !ok {
-			return fmt.Errorf("devices %s refers to an unknown fluid %s", device.NumeroCompteurAppareil, device.Fluide)
-		}
-
-		c.state.CounterStates[i] = CounterState{
-			Fluid:         device.Fluide,
-			AbsoluteIndex: device.ValeurIndex,
-			AnnualIndex:   dashboard.ConsoCumuleeAnneeCourante,
-			SerialNumber:  device.NumeroCompteurAppareil,
-		}
-	}
-
-	zap.L().Info("initialized counters")
-
-	return nil
+	return updated, nil
 }

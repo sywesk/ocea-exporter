@@ -49,7 +49,6 @@ func (s state) save(filePath string) error {
 type CounterState struct {
 	Fluid         string  `json:"fluid"`
 	AbsoluteIndex float64 `json:"absoluteIndex"`
-	AnnualIndex   float64 `json:"annualIndex"`
 	SerialNumber  string  `json:"serialNumber"`
 }
 
@@ -57,7 +56,6 @@ func (c CounterState) Clone() CounterState {
 	return CounterState{
 		Fluid:         c.Fluid,
 		AbsoluteIndex: c.AbsoluteIndex,
-		AnnualIndex:   c.AnnualIndex,
 		SerialNumber:  c.SerialNumber,
 	}
 }
@@ -85,8 +83,7 @@ func loadState(path string) (state, error) {
 }
 
 type rawAccountData struct {
-	Resident   oceaapi.Resident    `json:"resident"`
-	Local      oceaapi.Local       `json:"local"`
-	Dashboards []oceaapi.Dashboard `json:"dashboards"`
-	Devices    []oceaapi.Device    `json:"devices"`
+	Resident oceaapi.Resident `json:"resident"`
+	Local    oceaapi.Local    `json:"local"`
+	Devices  []oceaapi.Device `json:"devices"`
 }
