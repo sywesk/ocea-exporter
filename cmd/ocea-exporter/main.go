@@ -10,11 +10,11 @@ import (
 )
 
 func main() {
-	logger, err := zap.NewDevelopment()
+	zapCfg := zap.NewDevelopmentConfig()
+	logger, err := zapCfg.Build()
 	if err != nil {
 		panic("failed to init zap: " + err.Error())
 	}
-
 	zap.ReplaceGlobals(logger)
 
 	if len(os.Args) >= 3 {
@@ -25,6 +25,9 @@ func main() {
 
 	if err := loadConfig(os.Args[1:]...); err != nil {
 		zap.L().Fatal("failed to load configuration", zap.Error(err))
+	}
+	if !getConfig().Debug {
+		zapCfg.Level.SetLevel(zap.InfoLevel)
 	}
 
 	fetcher, err := counterfetcher.New(buildFetcherSettings())
@@ -64,15 +67,17 @@ func startHomeAssistantIntegration(fetcher *counterfetcher.CounterFetcher) {
 }
 
 func buildFetcherSettings() counterfetcher.Settings {
-	intervalDuration, err := time.ParseDuration(getConfig().PollInterval)
+	cfg := getConfig()
+
+	intervalDuration, err := time.ParseDuration(cfg.PollInterval)
 	if err != nil {
-		zap.L().Fatal("invalid poll_interval", zap.String("input", getConfig().PollInterval), zap.Error(err))
+		zap.L().Fatal("invalid poll_interval", zap.String("input", cfg.PollInterval), zap.Error(err))
 	}
 
 	return counterfetcher.Settings{
-		StateFilePath: getConfig().StateFilePath,
-		Username:      getConfig().Username,
-		Password:      getConfig().Password,
+		StateFilePath: cfg.StateFilePath,
+		Username:      cfg.Username,
+		Password:      cfg.Password,
 		PollInterval:  intervalDuration,
 	}
 }

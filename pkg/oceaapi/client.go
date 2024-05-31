@@ -115,6 +115,7 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 	if err != nil {
 		return fmt.Errorf("failed to create new request: %w", err)
 	}
+	zap.L().Debug("HTTP request", zap.String("url", url), zap.String("method", method))
 
 	if request != nil {
 		reqBytes, err := json.Marshal(request)
@@ -124,6 +125,7 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 
 		req.Body = io.NopCloser(bytes.NewReader(reqBytes))
 		req.Header.Set("Content-Type", "application/json")
+		zap.L().Debug("HTTP Request Body", zap.String("body", string(reqBytes)))
 	}
 
 	token, err := o.tokenProvider.GetToken()
@@ -142,6 +144,7 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 		return fmt.Errorf("failed to do HTTP request: %w", err)
 	}
 
+	zap.L().Debug("HTTP response status", zap.String("status", resp.Status))
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 		if isMaintenanceError(resp) {
 			return ErrMaintenance
@@ -154,6 +157,7 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 		if err != nil {
 			return fmt.Errorf("failed to read all response bytes: %w", err)
 		}
+		zap.L().Debug("HTTP response body", zap.String("body", string(respBytes)))
 
 		err = json.Unmarshal(respBytes, response)
 		if err != nil {
@@ -170,6 +174,7 @@ func isMaintenanceError(resp *http.Response) bool {
 		zap.L().Error("failed to read api error response", zap.Error(err))
 		return false
 	}
+	zap.L().Debug("HTTP error response body", zap.String("body", string(respBytes)))
 
 	maintenanceResponse := &MaintenanceResponse{}
 	err = json.Unmarshal(respBytes, maintenanceResponse)

@@ -26,6 +26,7 @@ type config struct {
 		Username   string `yaml:"username"`
 		Password   string `yaml:"password"`
 	} `yaml:"home_assistant"`
+	Debug bool `yaml:"debug"`
 }
 
 func (c *config) setFromEnv() {
@@ -39,6 +40,7 @@ func (c *config) setFromEnv() {
 	setStringFromEnv(&c.HomeAssistant.BrokerAddr, EnvironmentVariablePrefix+"HOME_ASSISTANT_BROKER_ADDR")
 	setStringFromEnv(&c.HomeAssistant.Username, EnvironmentVariablePrefix+"HOME_ASSISTANT_USERNAME")
 	setStringFromEnv(&c.HomeAssistant.Password, EnvironmentVariablePrefix+"HOME_ASSISTANT_PASSWORD")
+	setBoolFromEnv(&c.Debug, EnvironmentVariablePrefix+"DEBUG")
 }
 
 func (c *config) setDefaults() {
