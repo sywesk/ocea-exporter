@@ -62,7 +62,7 @@ func (c CounterState) Clone() CounterState {
 
 func loadState(path string) (state, error) {
 	if _, err := os.Stat(path); err != nil {
-		zap.L().Info("log file not found, skipping load", zap.String("path", path))
+		zap.L().Info("state file not found, skipping load", zap.String("path", path))
 		return state{}, nil
 	}
 

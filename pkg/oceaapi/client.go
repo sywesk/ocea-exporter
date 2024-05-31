@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go.uber.org/zap"
 	"io"
 	"net/http"
 	"time"
@@ -13,6 +14,10 @@ const (
 	OCEAAPIBaseURL = "https://espace-resident-api.ocea-sb.com/api/v1"
 )
 
+var (
+	ErrMaintenance = fmt.Errorf("api is under maintenance")
+)
+
 type TokenProvider interface {
 	GetToken() (string, error)
 }
@@ -20,6 +25,12 @@ type TokenProvider interface {
 type APIClient struct {
 	tokenProvider TokenProvider
 	client        *http.Client
+}
+
+type MaintenanceResponse struct {
+	IsOnline           bool   `json:"IsOnline"`
+	MaintenancePageUrl string `json:"MaintenancePageUrl"`
+	ErrorMessage       string `json:"ErrorMessage"`
 }
 
 func NewClient(provider TokenProvider) APIClient {
@@ -132,6 +143,9 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		if isMaintenanceError(resp) {
+			return ErrMaintenance
+		}
 		return fmt.Errorf("HTTP request failed: invalid status code %d (%s)", resp.StatusCode, resp.Status)
 	}
 
@@ -148,4 +162,21 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 	}
 
 	return nil
+}
+
+func isMaintenanceError(resp *http.Response) bool {
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		zap.L().Error("failed to read api error response", zap.Error(err))
+		return false
+	}
+
+	maintenanceResponse := &MaintenanceResponse{}
+	err = json.Unmarshal(respBytes, maintenanceResponse)
+	if err != nil {
+		zap.L().Error("failed to unmarshal maintenance response", zap.Error(err))
+		return false
+	}
+
+	return true
 }

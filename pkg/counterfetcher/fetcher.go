@@ -53,16 +53,7 @@ func (c *CounterFetcher) Start() error {
 	tokenProvider := oceaauth.NewTokenProvider(c.settings.Username, c.settings.Password)
 	c.apiClient = oceaapi.NewClient(tokenProvider)
 
-	// If the state is empty, then we need to fetch everything first.
-	if c.state.AccountData.Resident.NomClient == "" {
-		err = c.fetchInitialState()
-		if err != nil {
-			return fmt.Errorf("failed to fetch initial state: %w", err)
-		}
-	}
-
 	go c.worker()
-
 	return nil
 }
 
@@ -79,6 +70,16 @@ func (c *CounterFetcher) worker() {
 	t := time.NewTicker(c.settings.PollInterval)
 
 	for {
+		// If the state is empty, then we need to fetch everything first.
+		if c.state.AccountData.Resident.NomClient == "" {
+			err := c.fetchInitialState()
+			if err != nil {
+				zap.L().Error("failed to fetch initial state, will retry next time", zap.Error(err))
+				<-t.C
+				continue
+			}
+		}
+
 		err := c.fetchCounters()
 		if err != nil {
 			zap.L().Error("failed to fetch counters, will retry next time", zap.Error(err))
