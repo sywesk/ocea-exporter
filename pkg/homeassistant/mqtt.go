@@ -77,8 +77,8 @@ func (m *MQTT) publishSensorConfig(notif counterfetcher.Notification) {
 		topics := buildOldSensorTopics(fluid)
 		m.client.Publish(topics.Config, 0, true, []byte{})
 		m.client.Publish(topics.State, 0, true, []byte{})
-		zap.L().Info("cleared old topics")
 	}
+	zap.L().Info("cleared old topics")
 
 	for _, state := range notif.CounterStates {
 		topics, err := buildSensorTopics(state.Fluid, state.SerialNumber)

@@ -37,7 +37,6 @@ type FluidDescription struct {
 	DeviceClass DeviceClass
 	Icon        Icon
 	Name        string
-	DeviceName  string
 }
 
 var fluidDescriptions = map[string]FluidDescription{
@@ -46,21 +45,18 @@ var fluidDescriptions = map[string]FluidDescription{
 		DeviceClass: EnergyDeviceClass,
 		Icon:        RadiatorIcon,
 		Name:        "heating_energy_meter",
-		DeviceName:  "Heating Energy Meter",
 	},
 	"EauFroide": {
 		Unit:        CubicMeterUnit,
 		DeviceClass: WaterDeviceClass,
 		Icon:        WaterIcon,
 		Name:        "water_meter",
-		DeviceName:  "Water Meter",
 	},
 	"EauChaude": {
 		Unit:        CubicMeterUnit,
 		DeviceClass: WaterDeviceClass,
 		Icon:        WaterThermometerIcon,
 		Name:        "hot_water_meter",
-		DeviceName:  "Hot Water Meter",
 	},
 }
 
@@ -94,7 +90,6 @@ func getFluidSensorConfig(fluid string, serial string, stateTopic string) (Senso
 		DeviceClass:       desc.DeviceClass,
 		EnabledByDefault:  true,
 		Icon:              desc.Icon,
-		Name:              desc.Name,
 		StateClass:        TotalStateClass,
 		UnitOfMeasurement: desc.Unit,
 		StateTopic:        stateTopic,
@@ -104,7 +99,7 @@ func getFluidSensorConfig(fluid string, serial string, stateTopic string) (Senso
 				serial,
 			},
 			Manufacturer: MANUFACTURER_NAME,
-			Name:         desc.DeviceName,
+			Name:         fmt.Sprintf("%s %s", fluid, serial),
 		},
 	}, nil
 }
