@@ -127,3 +127,14 @@ func buildSensorTopics(fluid string, serial string) (SensorTopics, error) {
 		State:  baseTopic + "/state",
 	}, nil
 }
+
+// buildOldSensorTopics builds the previous MQTT topics that were removed, just to be able to publish an empty packet to
+// remove the previous sensors from homeassistant auto-discovery.
+func buildOldSensorTopics(fluid string) SensorTopics {
+	desc := fluidDescriptions[fluid]
+	baseTopic := fmt.Sprintf("homeassistant/sensor/ocea_exporter/%s", desc.Name)
+	return SensorTopics{
+		Config: baseTopic + "/config",
+		State:  baseTopic + "/state",
+	}
+}
