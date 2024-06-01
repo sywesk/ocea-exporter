@@ -6,6 +6,10 @@ It currently supports prometheus and home assistant by using MQTT & auto-discove
 
 ## Releases
 
+### 0.5.1
+
+This release adds the cleanup code to remove the old MQTT topics.
+
 ### 0.5.0
 
 This release adds support for multiple meters per fluid. Typically, for some buildings, there are multiple cold/hot water vertical lines, and each one needs a separate meter (think a meter for the bathroom and one for the kitchen). This wasn't supported until this release.
