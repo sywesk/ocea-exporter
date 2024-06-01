@@ -88,6 +88,7 @@ func getFluidSensorConfig(fluid string, serial string, stateTopic string) (Senso
 
 	return SensorConfig{
 		DeviceClass:       desc.DeviceClass,
+		Name:              desc.Name,
 		EnabledByDefault:  true,
 		Icon:              desc.Icon,
 		StateClass:        TotalStateClass,
