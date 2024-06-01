@@ -114,13 +114,13 @@ type SensorTopics struct {
 	State  string
 }
 
-func buildSensorTopics(fluid string) (SensorTopics, error) {
+func buildSensorTopics(fluid string, serial string) (SensorTopics, error) {
 	desc, ok := fluidDescriptions[fluid]
 	if !ok {
 		return SensorTopics{}, ErrUnknownFluid
 	}
 
-	baseTopic := fmt.Sprintf("homeassistant/sensor/ocea_exporter/%s", desc.Name)
+	baseTopic := fmt.Sprintf("homeassistant/sensor/ocea_exporter/%s_%s", desc.Name, serial)
 
 	return SensorTopics{
 		Config: baseTopic + "/config",

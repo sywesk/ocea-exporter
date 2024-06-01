@@ -126,13 +126,23 @@ func (c *CounterFetcher) notifyListeners() {
 func (c *CounterFetcher) updateCounterMetrics() {
 	localID := c.state.AccountData.Local.Local.ID
 
+	// Expose an aggregate time series for each fluid, to be retro-compatible with existing deployments.
+	fluidToAggregateIndex := map[string]float64{}
 	for _, state := range c.state.CounterStates {
-		index.WithLabelValues(state.Fluid, localID).Set(round3(state.AbsoluteIndex))
+		fluidToAggregateIndex[state.Fluid] += state.AbsoluteIndex
+	}
+	for fluid, aggregateIndex := range fluidToAggregateIndex {
+		index.WithLabelValues(fluid, localID).Set(round3(aggregateIndex))
+	}
+
+	// Expose a per-meter time series.
+	for _, state := range c.state.CounterStates {
+		meterIndex.WithLabelValues(state.SerialNumber, state.Fluid, localID).Set(round3(state.AbsoluteIndex))
 	}
 }
 
 func (c *CounterFetcher) fetchCounters() error {
-	devices, err := c.fetchDevices(c.state.AccountData.Local.Local.ID, len(c.state.AccountData.Local.FluidesRestitues))
+	devices, err := c.fetchDevices(c.state.AccountData.Local.Local.ID, false)
 	if err != nil {
 		return fmt.Errorf("fetching devices: %v", err)
 	}
@@ -187,7 +197,8 @@ func (c *CounterFetcher) fetchInitialState() error {
 		return fmt.Errorf("no fluid found for local %s", localID)
 	}
 
-	devices, err := c.fetchDevices(localID, len(local.FluidesRestitues))
+	// Fetch all devices and force a full retrieval.
+	devices, err := c.fetchDevices(localID, true)
 	if err != nil {
 		return fmt.Errorf("failed to reset counters: %w", err)
 	}
@@ -205,14 +216,15 @@ func (c *CounterFetcher) fetchInitialState() error {
 // fetchDevices will grab the actual index of all counters.
 //
 // It does so by calling the API, but there's a catch: if a counter hasn't reported yet for the current day,
-// it will be missing from the response. Thus, we need to go back 1 day earlier to get the last
-func (c *CounterFetcher) fetchDevices(localID string, expectedDeviceCount int) ([]oceaapi.Device, error) {
+// it will be missing from the response. Thus, we need to go back 1 day earlier to get the last. This behavior can
+// be forced using the forceFullRetrieval parameter.
+func (c *CounterFetcher) fetchDevices(localID string, forceFullRetrieval bool) ([]oceaapi.Device, error) {
 	devices, err := c.apiClient.GetDevices(localID, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get devices: %w", err)
 	}
 
-	if len(devices) == expectedDeviceCount {
+	if !forceFullRetrieval && len(devices) == len(c.state.AccountData.Devices) {
 		return devices, nil
 	}
 
@@ -225,29 +237,27 @@ func (c *CounterFetcher) fetchDevices(localID string, expectedDeviceCount int) (
 
 	// The current list doesn't contain all devices, so we're trying to back-fill the missing ones from the previous
 	// statement (yesterdayDevices).
+yesterdayDevices:
 	for _, olderDevice := range yesterdayDevices {
-		found := false
-
 		// As we're working with day-1 measurements, we first check if there's an up to date measurement. If so
 		// we keep the newest.
 		for _, newerDevice := range devices {
 			if olderDevice.AppareilID == newerDevice.AppareilID {
 				completeList = append(completeList, newerDevice)
-				found = true
-				break
+				continue yesterdayDevices
 			}
-		}
-
-		if found {
-			continue
 		}
 
 		// Otherwise, we default to the older measurement
 		completeList = append(completeList, olderDevice)
 	}
 
-	if len(completeList) != expectedDeviceCount {
+	if len(completeList) < len(c.state.AccountData.Devices) {
 		return nil, fmt.Errorf("not enough devices")
+	} else if len(completeList) > len(c.state.AccountData.Devices) {
+		zap.L().Warn("found additional devices",
+			zap.Int("old_count", len(c.state.AccountData.Devices)),
+			zap.Int("new_count", len(completeList)))
 	}
 
 	return completeList, nil
@@ -266,16 +276,16 @@ func (c *CounterFetcher) updateCounters(devices []oceaapi.Device) (bool, error) 
 		return true, nil
 	}
 
-	deviceFluidToDevice := map[string]oceaapi.Device{}
+	serialToDevice := map[string]oceaapi.Device{}
 	for _, device := range devices {
-		deviceFluidToDevice[device.Fluide] = device
+		serialToDevice[device.NumeroCompteurAppareil] = device
 	}
 
 	updated := false
 	for i, state := range c.state.CounterStates {
-		device, ok := deviceFluidToDevice[state.Fluid]
+		device, ok := serialToDevice[state.SerialNumber]
 		if !ok {
-			return false, fmt.Errorf("no device for fluid %s", state.Fluid)
+			return false, fmt.Errorf("no device with serial %s", state.SerialNumber)
 		}
 		if state.AbsoluteIndex == device.ValeurIndex {
 			continue

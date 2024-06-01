@@ -36,16 +36,6 @@ func (s state) save(filePath string) error {
 	return nil
 }
 
-// CounterState helps avoid getting the absolute indexes too often.
-// To do so, it remembers the pair (AbsoluteIndex, YtDRelativeIndex), which represents the cumulative value at a given
-// time and its corresponding year-to-date value, the latter of which isn't protected by a specific endpoint.
-// Then, to get the current absolute index, we subtract the state's year-to-date index to the current one, and add the
-// difference to the absolute index.
-//
-// TL;DR: with t2 > t1, absoluteIndex(t2) = absoluteIndex(t1) + (ytdIndex(t2) - ytdIndex(t1))
-//
-// We also need to periodically save the current relative index (aka LastYtDRelativeIndex) in order to detect when the
-// value is reset at the beginning of the year.
 type CounterState struct {
 	Fluid         string  `json:"fluid"`
 	AbsoluteIndex float64 `json:"absoluteIndex"`

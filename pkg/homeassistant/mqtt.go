@@ -73,7 +73,7 @@ func (m *MQTT) worker() {
 
 func (m *MQTT) publishSensorConfig(notif counterfetcher.Notification) {
 	for _, state := range notif.CounterStates {
-		topics, err := buildSensorTopics(state.Fluid)
+		topics, err := buildSensorTopics(state.Fluid, state.SerialNumber)
 		if err != nil {
 			zap.L().Error("failed to build sensor topics", zap.String("fluid", state.Fluid), zap.Error(err))
 			continue
@@ -94,7 +94,7 @@ func (m *MQTT) publishSensorConfig(notif counterfetcher.Notification) {
 
 func (m *MQTT) publishSensorValues(notif counterfetcher.Notification) {
 	for _, state := range notif.CounterStates {
-		topics, err := buildSensorTopics(state.Fluid)
+		topics, err := buildSensorTopics(state.Fluid, state.SerialNumber)
 		if err != nil {
 			zap.L().Error("failed to build sensor topics", zap.String("fluid", state.Fluid), zap.Error(err))
 			continue

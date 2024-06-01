@@ -31,17 +31,6 @@ type Resident struct {
 	} `json:"resident"`
 }
 
-type Dashboard struct {
-	Fluide                    string  `json:"fluide"`
-	LocalID                   string  `json:"localId"`
-	ConsoMoyenne              float64 `json:"consoMoyenne"`
-	ConsoDernierMois          float64 `json:"consoDernierMois"`
-	ConsoCumuleeAnneeCourante float64 `json:"consoCumuleeAnneeCourante"`
-	Unite                     string  `json:"unite"`
-	ConsoMoisCourant          float64 `json:"consoMoisCourant"`
-	DateDerniereReleve        string  `json:"dateDerniereReleve"`
-}
-
 type Fluid struct {
 	Fluide           string `json:"fluide"`
 	TypeDistribution string `json:"typeDistribution"`

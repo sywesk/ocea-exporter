@@ -64,17 +64,6 @@ func (o APIClient) GetLocal(localID string) (Local, error) {
 	return local, nil
 }
 
-func (o APIClient) GetFluidDashboard(localID, fluid string) (Dashboard, error) {
-	dashboard := Dashboard{}
-
-	err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/conso/dashboard/"+fluid, nil, &dashboard)
-	if err != nil {
-		return dashboard, fmt.Errorf("failed to get dashboard: %w", err)
-	}
-
-	return dashboard, nil
-}
-
 type localIndexDemandRequest struct {
 	LocalID string `json:"localId"`
 	Token   string `json:"token"`
