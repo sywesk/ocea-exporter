@@ -6,6 +6,10 @@ It currently supports prometheus and home assistant by using MQTT & auto-discove
 
 ## Releases
 
+### 0.5.2
+
+Change the way device names work, taking advantage of the MQTT topic breaking change
+
 ### 0.5.1
 
 This release adds the cleanup code to remove the old MQTT topics.
