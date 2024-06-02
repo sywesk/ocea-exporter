@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -25,6 +26,11 @@ type MQTT struct {
 
 func New(params MQTTParams) (MQTT, chan<- counterfetcher.Notification) {
 	listener := make(chan counterfetcher.Notification, 1)
+
+	if !strings.Contains(params.Host, ":") {
+		params.Host += ":1883"
+		zap.L().Warn("missing port in MQTT address, using the default 1883 port", zap.String("host", params.Host))
+	}
 
 	return MQTT{
 		updates: listener,

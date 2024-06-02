@@ -15,6 +15,7 @@ func main() {
 	if err != nil {
 		panic("failed to init zap: " + err.Error())
 	}
+	logger.WithOptions(zap.AddStacktrace(zap.ErrorLevel))
 	zap.ReplaceGlobals(logger)
 
 	if len(os.Args) >= 3 {

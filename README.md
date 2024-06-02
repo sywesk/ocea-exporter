@@ -4,39 +4,23 @@ ocea-exporter is a tool that exports fluid consumption (hot water, cold water, h
 
 It currently supports prometheus and home assistant by using MQTT & auto-discovery.
 
-## Releases
-
-### 0.5.2
-
-Change the way device names work, taking advantage of the MQTT topic breaking change
-
-### 0.5.1
-
-This release adds the cleanup code to remove the old MQTT topics.
-
-### 0.5.0
-
-This release adds support for multiple meters per fluid. Typically, for some buildings, there are multiple cold/hot water vertical lines, and each one needs a separate meter (think a meter for the bathroom and one for the kitchen). This wasn't supported until this release.
-
-__BREAKING CHANGE__: MQTT topics have been renamed to support multiple meters for the same fluid.
-
 ## Configuration
 
-The configuration is a short YAML file. Here's the reference (with the default values) :
+The configuration is a short YAML file. Here's the reference (with the default values):
 
 ```yaml
-username: 
-password: 
+username: <username>
+password: <password>
 poll_interval: 30m
 state_file_path: 
 prometheus: 
-  enabled: false
+  enabled: true
   listen_addr: 127.0.0.1:9001
 home_assistant:
-  enabled: false
-  broker_addr: 
-  username: 
-  password: 
+  enabled: true
+  broker_addr: <broker ip address>:1883
+  username: <broker username>
+  password: <broker password>
 debug: false
 ```
 
@@ -66,7 +50,7 @@ version: '3'
 services:
   ocea_exporter:
     container_name: ocea-exporter
-    image: sywesk/ocea-exporter:v0.4.0
+    image: sywesk/ocea-exporter:v0.5.4
     restart: always
     command: "/app/ocea-exporter"
     environment:
@@ -80,3 +64,29 @@ services:
     volumes:
       - /opt/ocea-exporter:/data
 ```
+
+## Changelog
+
+### 0.5.4
+
+- Make the MQTT integration add the default 1883 port and output a warning.
+- Make the README show how to set the port & move the changelog at the bottom.
+- Stop warning messages from outputting stacktraces.
+
+### 0.5.3
+
+Add back the sensor name to make the entity naming clearer.
+
+### 0.5.2
+
+Change the way device names work, taking advantage of the MQTT topic breaking change.
+
+### 0.5.1
+
+This release adds the cleanup code to remove the old MQTT topics.
+
+### 0.5.0
+
+This release adds support for multiple meters per fluid. Typically, for some buildings, there are multiple cold/hot water vertical lines, and each one needs a separate meter (think a meter for the bathroom and one for the kitchen). This wasn't supported until this release.
+
+__BREAKING CHANGE__: MQTT topics have been renamed to support multiple meters for the same fluid.
