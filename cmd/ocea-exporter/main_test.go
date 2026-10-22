@@ -8,7 +8,7 @@ import (
 )
 
 func TestRunStopsWithCancelledContext(t *testing.T) {
-	cfg := config{Username: "test", Password: "test", PollInterval: "30m", StateFilePath: filepath.Join(t.TempDir(), "state.json")}
+	cfg := config{Username: "test", Password: "test", PollInterval: "3h", StateFilePath: filepath.Join(t.TempDir(), "state.json")}
 	cfg.Prometheus.Enabled = true
 	cfg.Prometheus.ListenAddr = "127.0.0.1:0"
 	cfg.HomeAssistant.Enabled = true
@@ -26,7 +26,7 @@ func TestRunReportsCorruptStateWithoutStartingWorkers(t *testing.T) {
 	if err := os.WriteFile(file, []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{Username: "test", Password: "test", PollInterval: "30m", StateFilePath: file}
+	cfg := config{Username: "test", Password: "test", PollInterval: "3h", StateFilePath: file}
 	cfg.Prometheus.Enabled = true
 	cfg.Prometheus.ListenAddr = "127.0.0.1:0"
 	if err := run(context.Background(), cfg); err == nil {

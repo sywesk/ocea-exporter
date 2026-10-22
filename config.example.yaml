@@ -1,6 +1,6 @@
 username: "your-owner-account@example.com"
 password: "replace-me"
-poll_interval: 30m
+poll_interval: 3h
 state_file_path: ./state.local.json
 prometheus:
   enabled: true

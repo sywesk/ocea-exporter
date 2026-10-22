@@ -28,7 +28,7 @@ The configuration is a short YAML file. The defaults are shown below; credential
 ```yaml
 username: <username>
 password: <password>
-poll_interval: 30m
+poll_interval: 3h
 state_file_path: 
 prometheus: 
   enabled: false

@@ -63,7 +63,7 @@ func (c *config) setFromEnv() error {
 
 func (c *config) setDefaults() error {
 	if c.PollInterval == "" {
-		c.PollInterval = "30m"
+		c.PollInterval = "3h"
 	}
 	if c.StateFilePath == "" {
 		dir, err := os.UserConfigDir()

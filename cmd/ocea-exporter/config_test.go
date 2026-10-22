@@ -33,7 +33,7 @@ func TestConfigFileEnvironmentAndDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := getConfig()
-	if c.Username != "override" || c.Password != "secret" || c.PollInterval != "30m" || c.StateFilePath == "" || !c.Prometheus.Enabled || c.HomeAssistant.Enabled {
+	if c.Username != "override" || c.Password != "secret" || c.PollInterval != "3h" || c.StateFilePath == "" || !c.Prometheus.Enabled || c.HomeAssistant.Enabled {
 		t.Fatalf("unexpected config: %+v", c)
 	}
 }
