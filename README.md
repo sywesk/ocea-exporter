@@ -4,6 +4,16 @@ ocea-exporter is a tool that exports fluid consumption (hot water, cold water, h
 
 It currently supports prometheus and home assistant by using MQTT & auto-discovery.
 
+The meter-reading flow uses an owner (`Proprietaire`) account. It discovers the
+meters through `GET /local/{id}/appareils`, requests a dated token through
+`GET /local/{id}/token`, then sends `localId`, `token`, and `pdsIds` to
+`POST /local/demande`. Missing readings for today are back-filled from yesterday,
+while keeping today's readings when available.
+The login-page parser accepts whitespace around its embedded settings fields.
+
+Occupant accounts use a separate period-based Excel export at
+`POST /local/demande/export`; this exporter does not currently parse that format.
+
 ## Configuration
 
 The configuration is a short YAML file. Here's the reference (with the default values):
@@ -41,6 +51,17 @@ Or you can use the docker image `sywesk/ocea-exporter`.
 ```sh
 ocea-exporter <path of your config file>
 ```
+
+For a local owner-account check, copy `config.example.yaml` to `config.local.yaml`
+and enter your credentials there. Then run:
+
+```sh
+go run ./cmd/ocea-exporter ./config.local.yaml
+```
+
+The example enables Prometheus at `http://127.0.0.1:9001/metrics` and disables MQTT.
+`config.local.yaml` and `state.local.json` are ignored by Git. Use this separate
+state file for testing so that an existing deployment's state is preserved.
 
 ### Example docker-compose file
 

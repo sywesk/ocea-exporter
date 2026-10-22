@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -36,7 +37,7 @@ type MaintenanceResponse struct {
 func NewClient(provider TokenProvider) APIClient {
 	client := APIClient{
 		tokenProvider: provider,
-		client:        http.DefaultClient,
+		client:        &http.Client{Timeout: 30 * time.Second},
 	}
 
 	return client
@@ -65,11 +66,33 @@ func (o APIClient) GetLocal(localID string) (Local, error) {
 }
 
 type localIndexDemandRequest struct {
-	LocalID string `json:"localId"`
-	Token   string `json:"token"`
+	LocalID string   `json:"localId"`
+	Token   string   `json:"token"`
+	PDSIDs  []string `json:"pdsIds"`
 }
 
 func (o APIClient) GetDevices(localID string, statementDate time.Time) ([]Device, error) {
+	var meters []struct {
+		PDSID string `json:"pdsId"`
+	}
+	if err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/appareils", nil, &meters); err != nil {
+		return nil, fmt.Errorf("failed to get meters: %w", err)
+	}
+	pdsIDs := make([]string, 0, len(meters))
+	seen := make(map[string]bool)
+	for _, meter := range meters {
+		if meter.PDSID == "" {
+			return nil, fmt.Errorf("meter has no pdsId")
+		}
+		if !seen[meter.PDSID] {
+			pdsIDs = append(pdsIDs, meter.PDSID)
+			seen[meter.PDSID] = true
+		}
+	}
+	if len(pdsIDs) == 0 {
+		return nil, fmt.Errorf("no meter found for local %s", localID)
+	}
+
 	token := ""
 
 	t := statementDate
@@ -78,7 +101,11 @@ func (o APIClient) GetDevices(localID string, statementDate time.Time) ([]Device
 	}
 	date := t.Format("2006-01-02")
 
-	err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/indexes/token?dateDemande="+date+"T00:00:00.000Z&raisonConforme=RealisationEtatDesLieux", nil, &token)
+	query := url.Values{
+		"dateDemande":    {date + "T00:00:00.000Z"},
+		"raisonConforme": {"RealisationEtatDesLieux"},
+	}
+	err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/token?"+query.Encode(), nil, &token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token: %w", err)
 	} else if token == "" {
@@ -89,11 +116,12 @@ func (o APIClient) GetDevices(localID string, statementDate time.Time) ([]Device
 	indexRequest := localIndexDemandRequest{
 		LocalID: localID,
 		Token:   token,
+		PDSIDs:  pdsIDs,
 	}
 
-	err = o.do("POST", OCEAAPIBaseURL+"/local/indexes/demande", &indexRequest, &deviceList)
+	err = o.do("POST", OCEAAPIBaseURL+"/local/demande", &indexRequest, &deviceList)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get token: %w", err)
+		return nil, fmt.Errorf("failed to get indexes: %w", err)
 	}
 
 	return deviceList, nil
@@ -114,7 +142,6 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 
 		req.Body = io.NopCloser(bytes.NewReader(reqBytes))
 		req.Header.Set("Content-Type", "application/json")
-		zap.L().Debug("HTTP Request Body", zap.String("body", string(reqBytes)))
 	}
 
 	token, err := o.tokenProvider.GetToken()
@@ -132,9 +159,10 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 	if err != nil {
 		return fmt.Errorf("failed to do HTTP request: %w", err)
 	}
+	defer resp.Body.Close()
 
 	zap.L().Debug("HTTP response status", zap.String("status", resp.Status))
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if isMaintenanceError(resp) {
 			return ErrMaintenance
 		}
@@ -146,7 +174,6 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 		if err != nil {
 			return fmt.Errorf("failed to read all response bytes: %w", err)
 		}
-		zap.L().Debug("HTTP response body", zap.String("body", string(respBytes)))
 
 		err = json.Unmarshal(respBytes, response)
 		if err != nil {
@@ -163,14 +190,13 @@ func isMaintenanceError(resp *http.Response) bool {
 		zap.L().Error("failed to read api error response", zap.Error(err))
 		return false
 	}
-	zap.L().Debug("HTTP error response body", zap.String("body", string(respBytes)))
-
-	maintenanceResponse := &MaintenanceResponse{}
+	maintenanceResponse := &struct {
+		IsOnline *bool `json:"IsOnline"`
+	}{}
 	err = json.Unmarshal(respBytes, maintenanceResponse)
 	if err != nil {
-		zap.L().Error("failed to unmarshal maintenance response", zap.Error(err))
 		return false
 	}
 
-	return true
+	return maintenanceResponse.IsOnline != nil && !*maintenanceResponse.IsOnline
 }

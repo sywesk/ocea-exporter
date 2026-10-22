@@ -224,7 +224,7 @@ func (c *CounterFetcher) fetchDevices(localID string, forceFullRetrieval bool) (
 		return nil, fmt.Errorf("failed to get devices: %w", err)
 	}
 
-	if !forceFullRetrieval && len(devices) == len(c.state.AccountData.Devices) {
+	if !forceFullRetrieval && len(devices) > 0 && containsDevices(devices, c.state.AccountData.Devices) {
 		return devices, nil
 	}
 
@@ -233,26 +233,9 @@ func (c *CounterFetcher) fetchDevices(localID string, forceFullRetrieval bool) (
 		return nil, fmt.Errorf("failed to get yesterday devices: %w", err)
 	}
 
-	var completeList []oceaapi.Device
+	completeList := mergeDevices(devices, yesterdayDevices)
 
-	// The current list doesn't contain all devices, so we're trying to back-fill the missing ones from the previous
-	// statement (yesterdayDevices).
-yesterdayDevices:
-	for _, olderDevice := range yesterdayDevices {
-		// As we're working with day-1 measurements, we first check if there's an up to date measurement. If so
-		// we keep the newest.
-		for _, newerDevice := range devices {
-			if olderDevice.AppareilID == newerDevice.AppareilID {
-				completeList = append(completeList, newerDevice)
-				continue yesterdayDevices
-			}
-		}
-
-		// Otherwise, we default to the older measurement
-		completeList = append(completeList, olderDevice)
-	}
-
-	if len(completeList) < len(c.state.AccountData.Devices) {
+	if len(completeList) == 0 || !containsDevices(completeList, c.state.AccountData.Devices) {
 		return nil, fmt.Errorf("not enough devices")
 	} else if len(completeList) > len(c.state.AccountData.Devices) {
 		zap.L().Warn("found additional devices",
@@ -261,6 +244,35 @@ yesterdayDevices:
 	}
 
 	return completeList, nil
+}
+
+func containsDevices(devices, expected []oceaapi.Device) bool {
+	ids := make(map[string]bool, len(devices))
+	for _, device := range devices {
+		ids[device.AppareilID] = true
+	}
+	for _, device := range expected {
+		if !ids[device.AppareilID] {
+			return false
+		}
+	}
+	return true
+}
+
+// Keep today's readings and back-fill missing meters from yesterday.
+func mergeDevices(today, yesterday []oceaapi.Device) []oceaapi.Device {
+	merged := append([]oceaapi.Device(nil), today...)
+	ids := make(map[string]bool, len(today))
+	for _, device := range today {
+		ids[device.AppareilID] = true
+	}
+	for _, device := range yesterday {
+		if !ids[device.AppareilID] {
+			merged = append(merged, device)
+			ids[device.AppareilID] = true
+		}
+	}
+	return merged
 }
 
 func (c *CounterFetcher) updateCounters(devices []oceaapi.Device) (bool, error) {

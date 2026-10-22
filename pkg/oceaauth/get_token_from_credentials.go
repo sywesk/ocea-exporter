@@ -216,6 +216,16 @@ func (o *TokenProvider) submitCredentials(authSettings authorizeSettings, cookie
 		return fmt.Errorf("failed to authorize: bad status code: %d", resp.StatusCode)
 	}
 
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("failed to decode sign-in response: %w", err)
+	}
+	if result.Status != "200" {
+		return fmt.Errorf("sign-in rejected (status %s): check credentials or account requirements", result.Status)
+	}
+
 	return nil
 }
 
@@ -302,9 +312,9 @@ type authorizeSettings struct {
 }
 
 var (
-	transIdRegex    = regexp.MustCompile(".*\"transId\":\"(StateProperties=[a-zA-Z0-9]+)\".*")
-	pageViewIdRegex = regexp.MustCompile(".*\"pageViewId\":\"([a-f0-9-]+)\".*")
-	csrfRegex       = regexp.MustCompile(".*\"csrf\":\"([a-zA-Z0-9=_-]+)\".*")
+	transIdRegex    = regexp.MustCompile(`"transId"\s*:\s*"(StateProperties=[a-zA-Z0-9]+)"`)
+	pageViewIdRegex = regexp.MustCompile(`"pageViewId"\s*:\s*"([a-f0-9-]+)"`)
+	csrfRegex       = regexp.MustCompile(`"csrf"\s*:\s*"([a-zA-Z0-9=_-]+)"`)
 )
 
 func extractAuthorizeSettings(page []byte, req *http.Request) (authorizeSettings, error) {
@@ -314,7 +324,7 @@ func extractAuthorizeSettings(page []byte, req *http.Request) (authorizeSettings
 	}
 
 	pageViewId := pageViewIdRegex.FindSubmatch(page)
-	if transId == nil {
+	if pageViewId == nil {
 		return authorizeSettings{}, fmt.Errorf("pageViewId not found")
 	}
 
