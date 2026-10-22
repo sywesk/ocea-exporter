@@ -8,7 +8,10 @@ For an owner (`Proprietaire`) account, the meter-reading flow discovers the
 meters through `GET /local/{id}/appareils`, requests a dated token through
 `GET /local/{id}/token`, then sends `localId`, `token`, and `pdsIds` to
 `POST /local/demande`. Missing readings for today are back-filled from yesterday,
-while keeping today's readings when available.
+while keeping today's readings when available. The current meter inventory is
+used to distinguish missing readings from retired or replaced meters. A poll
+is published only when every current meter has a valid reading and the complete
+snapshot has been saved successfully.
 The login-page parser accepts whitespace around its embedded settings fields.
 
 Occupant (`Occupant`) accounts are detected from the resident's occupation and
@@ -20,7 +23,7 @@ to the same values used by owner accounts. Excel dates have daily precision.
 
 ## Configuration
 
-The configuration is a short YAML file. Here's the reference (with the default values):
+The configuration is a short YAML file. The defaults are shown below; credentials must be supplied. Enable the integrations you want to use.
 
 ```yaml
 username: <username>
@@ -28,21 +31,40 @@ password: <password>
 poll_interval: 30m
 state_file_path: 
 prometheus: 
-  enabled: true
+  enabled: false
   listen_addr: 127.0.0.1:9001
 home_assistant:
-  enabled: true
+  enabled: false
   broker_addr: <broker ip address>:1883
   username: <broker username>
   password: <broker password>
 debug: false
 ```
 
-Note: `poll_interval` is a `time.Duration` string, so you can use `1h`, `10m`, `1d`, or `1h30m`, and it will do what you think it does.
+`poll_interval` must be a positive Go duration, such as `1h`, `10m`, `24h`, or
+`1h30m`. The `d` suffix is not supported. Unknown configuration keys, invalid
+booleans, and invalid broker addresses are rejected at startup. Integration
+flags default to `false`; an explicit `false` is preserved.
+
+When omitted, `state_file_path` is `ocea-exporter/state.json` under the OS user
+configuration directory. Its parent directories are created with private
+permissions. Snapshots are written to a temporary file, synced, then renamed over
+the previous snapshot. A corrupt state file causes a clear startup error; move
+it aside to rebuild state from the portal.
+
+MQTT accepts a hostname or IP with an optional port (default `1883`), IPv6, and
+explicit `tcp://`, `ssl://`, `tls://`, `ws://`, or `wss://` URLs. TLS defaults to
+port `8883`. Discovery and values use retained QoS 1 messages, checked for
+acknowledgement. Failed connections and publications are retried with the latest
+snapshot. Discovery is refreshed on successful polls, and meters retired during
+the process lifetime have their retained discovery and state topics removed.
 
 Environment variables can also be used to override the configuration. Add the prefix `OCEA_EXPORTER_` before the configuration key to get the corresponding environment variable. For example, `home_assistant.enabled` can be changed using the `OCEA_EXPORTER_HOME_ASSISTANT_ENABLED` environment variable.
 
 ## Installing
+
+Building from source requires Go **1.26.10 or newer**. Go versions supporting
+automatic toolchain downloads will select the version required by `go.mod`.
 
 ```sh
 go install github.com/sywesk/ocea-exporter/cmd/ocea-exporter@latest
@@ -72,12 +94,11 @@ For an occupant-account check, use `config.local.occupant.yaml` with
 ### Example docker-compose file
 
 ```yaml
-version: '3'
-
 services:
   ocea_exporter:
     container_name: ocea-exporter
-    image: sywesk/ocea-exporter:v0.5.4
+    build: .
+    image: ocea-exporter:local
     restart: always
     command: "/app/ocea-exporter"
     environment:
@@ -91,6 +112,34 @@ services:
     volumes:
       - /opt/ocea-exporter:/data
 ```
+
+## Metrics and lifecycle
+
+Existing index series and Home Assistant discovery IDs remain unchanged:
+
+- `ocea_metering_index{fluid,local_id}`: aggregate index per fluid.
+- `ocea_metering_device_index{serial,fluid,local_id}`: index per current meter.
+- `ocea_scrape_success`: `1` when the latest portal poll and persistence succeeded,
+  otherwise `0`.
+- `ocea_last_success_timestamp_seconds`: time of the last successful poll.
+- `ocea_metering_reading_timestamp_seconds{serial,fluid,local_id}`: date of the
+  actual source reading, when present. Dates without an offset are interpreted
+  as UTC; occupant exports have daily precision.
+
+A failed poll preserves the previous values and last-success timestamp. Monitor
+success and reading age together: a working portal may still return yesterday's
+reading. Retired meters and fluids disappear from the index metrics after the
+next complete successful poll.
+
+SIGINT/SIGTERM cancel portal requests and MQTT operations, stop the workers and
+close the metrics server. An unavailable metrics listen address fails startup.
+
+## Development and dependency updates
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for tests and security checks. The Excelize
+version in `go.mod` is intentionally pinned to an exact upstream commit: it
+contains security fixes not yet included in the latest stable `2.11.0` release.
+Recheck those fixes before replacing the pin with a stable release.
 
 ## Changelog
 

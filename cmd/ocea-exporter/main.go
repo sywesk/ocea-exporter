@@ -1,84 +1,99 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/sywesk/ocea-exporter/pkg/counterfetcher"
 	"github.com/sywesk/ocea-exporter/pkg/homeassistant"
 	"go.uber.org/zap"
 )
 
 func main() {
-	zapCfg := zap.NewDevelopmentConfig()
-	logger, err := zapCfg.Build()
-	if err != nil {
-		panic("failed to init zap: " + err.Error())
-	}
-	logger.WithOptions(zap.AddStacktrace(zap.ErrorLevel))
-	zap.ReplaceGlobals(logger)
-
-	if len(os.Args) >= 3 {
-		println("usage: ocea-exporter [config_file]")
-		println("  config_file: optional path to a configuration file")
+	if len(os.Args) > 2 {
+		fmt.Fprintln(os.Stderr, "usage: ocea-exporter [config_file]")
 		os.Exit(1)
 	}
-
 	if err := loadConfig(os.Args[1:]...); err != nil {
-		zap.L().Fatal("failed to load configuration", zap.Error(err))
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	if !getConfig().Debug {
-		zapCfg.Level.SetLevel(zap.InfoLevel)
+	cfg := getConfig()
+	logConfig := zap.NewDevelopmentConfig()
+	if !cfg.Debug {
+		logConfig.Level.SetLevel(zap.InfoLevel)
 	}
-
-	fetcher, err := counterfetcher.New(buildFetcherSettings())
+	logger, err := logConfig.Build(zap.AddStacktrace(zap.ErrorLevel))
 	if err != nil {
-		zap.L().Fatal("failed to create a counter fetcher", zap.Error(err))
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-
-	err = fetcher.Start()
+	zap.ReplaceGlobals(logger)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err = run(ctx, cfg)
+	stop()
 	if err != nil {
-		zap.L().Fatal("failed to start counter fetcher", zap.Error(err))
+		logger.Error("exporter stopped", zap.Error(err))
 	}
-
-	setupPrometheusMetricsHandler()
-	startHomeAssistantIntegration(fetcher)
-
-	for {
-		time.Sleep(1 * time.Minute)
+	_ = logger.Sync()
+	if err != nil {
+		os.Exit(1)
 	}
 }
 
-func startHomeAssistantIntegration(fetcher *counterfetcher.CounterFetcher) {
-	cfg := getConfig()
-
-	if !cfg.HomeAssistant.Enabled {
-		zap.L().Info("homeassistant integration is disabled")
-		return
-	}
-
-	ha, receiver := homeassistant.New(homeassistant.MQTTParams{
-		Host:     cfg.HomeAssistant.BrokerAddr,
-		Username: cfg.HomeAssistant.Username,
-		Password: cfg.HomeAssistant.Password,
-	})
-	ha.Start()
-
-	fetcher.RegisterListener(receiver)
-}
-
-func buildFetcherSettings() counterfetcher.Settings {
-	cfg := getConfig()
-
-	intervalDuration, err := time.ParseDuration(cfg.PollInterval)
+func run(ctx context.Context, cfg config) error {
+	interval, err := time.ParseDuration(cfg.PollInterval)
 	if err != nil {
-		zap.L().Fatal("invalid poll_interval", zap.String("input", cfg.PollInterval), zap.Error(err))
+		return fmt.Errorf("invalid poll interval: %w", err)
 	}
-
-	return counterfetcher.Settings{
-		StateFilePath: cfg.StateFilePath,
-		Username:      cfg.Username,
-		Password:      cfg.Password,
-		PollInterval:  intervalDuration,
+	fetcher, err := counterfetcher.New(counterfetcher.Settings{StateFilePath: cfg.StateFilePath, Username: cfg.Username, Password: cfg.Password, PollInterval: interval})
+	if err != nil {
+		return err
 	}
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(fetcher, collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	server, serverErrors, err := startPrometheusServer(cfg, registry)
+	if err != nil {
+		return err
+	}
+	if server != nil {
+		defer server.Close()
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var ha *homeassistant.MQTT
+	if cfg.HomeAssistant.Enabled {
+		integration, receiver := homeassistant.New(homeassistant.MQTTParams{Host: cfg.HomeAssistant.BrokerAddr, Username: cfg.HomeAssistant.Username, Password: cfg.HomeAssistant.Password})
+		ha = &integration
+		fetcher.RegisterListener(receiver)
+	}
+	if err := fetcher.Start(workerCtx); err != nil {
+		return err
+	}
+	if ha != nil {
+		go ha.Run(workerCtx)
+	}
+	select {
+	case <-ctx.Done():
+	case err = <-serverErrors:
+	}
+	cancel()
+	<-fetcher.Done()
+	if ha != nil {
+		<-ha.Done()
+	}
+	if server != nil {
+		shutdownCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		if shutdownErr := server.Shutdown(shutdownCtx); shutdownErr != nil && err == nil {
+			err = shutdownErr
+		}
+	}
+	return err
 }

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -66,14 +67,15 @@ import (
 
 func (o *TokenProvider) getTokenFromCredentials() error {
 	o.client.Jar, _ = cookiejar.New(nil)
+	defer func() { o.client.Jar = nil }()
 
-	requestId := uuid.NewString()
+	requestID := uuid.NewString()
 	challengeCleartext, challengeHash, err := genChallenge()
 	if err != nil {
 		return fmt.Errorf("failed to generate challenge: %w", err)
 	}
 
-	authSettings, cookies, err := o.getAuthorizePage(requestId, challengeHash)
+	authSettings, cookies, err := o.getAuthorizePage(requestID, challengeHash)
 	if err != nil {
 		return fmt.Errorf("failed to get portal page: %w", err)
 	}
@@ -88,18 +90,22 @@ func (o *TokenProvider) getTokenFromCredentials() error {
 		return fmt.Errorf("failed to confirm login: %w", err)
 	}
 
+	if authCode.state == "" || authCode.state != authSettings.state {
+		return fmt.Errorf("OAuth state does not match authorization request")
+	}
 	o.client.Jar = nil
 
-	o.tokens, err = o.exchangeCode(authCode, requestId, challengeCleartext)
+	next, err := o.exchangeCode(authCode, requestID, challengeCleartext)
 	if err != nil {
 		return fmt.Errorf("failed to exchange code: %w", err)
 	}
 
+	o.tokens = next
 	zap.L().Info("auth: got token from credentials")
 	return nil
 }
 
-func (o *TokenProvider) exchangeCode(authCode authCodeResponse, requestId string, challengeCleartext string) (tokens, error) {
+func (o *TokenProvider) exchangeCode(authCode authCodeResponse, requestID string, challengeCleartext string) (tokens, error) {
 	form := url.Values{}
 
 	form.Add("client_id", OCEALoginClientID)
@@ -109,9 +115,9 @@ func (o *TokenProvider) exchangeCode(authCode authCodeResponse, requestId string
 	form.Add("code_verifier", challengeCleartext)
 	form.Add("grant_type", "authorization_code")
 	form.Add("client_info", "1")
-	form.Add("client-request-id", requestId)
+	form.Add("client-request-id", requestID)
 
-	req, err := http.NewRequest("POST", OCEATokenEndpoint, strings.NewReader(form.Encode()))
+	req, err := o.newRequest("POST", OCEATokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return tokens{}, fmt.Errorf("failed to create http request: %w", err)
 	}
@@ -136,7 +142,7 @@ func (o *TokenProvider) exchangeCode(authCode authCodeResponse, requestId string
 }
 
 func (o *TokenProvider) confirmLogin(authSettings authorizeSettings) (authCodeResponse, error) {
-	req, err := http.NewRequest("GET", OCEALoginConfirmPage, nil)
+	req, err := o.newRequest("GET", OCEALoginConfirmPage, nil)
 	if err != nil {
 		return authCodeResponse{}, fmt.Errorf("failed to create http request: %w", err)
 	}
@@ -145,15 +151,15 @@ func (o *TokenProvider) confirmLogin(authSettings authorizeSettings) (authCodeRe
 
 	q.Set("p", "B2C_1A_SIGNUP_SIGNIN")
 	q.Set("rememberMe", "false")
-	q.Set("csrf_token", authSettings.crsf)
-	q.Set("diags", "{\"pageViewId\":\""+authSettings.pageViewId+"\",\"pageId\":\"CombinedSigninAndSignup\",\"trace\":[]}")
+	q.Set("csrf_token", authSettings.csrf)
+	q.Set("diags", "{\"pageViewId\":\""+authSettings.pageViewID+"\",\"pageId\":\"CombinedSigninAndSignup\",\"trace\":[]}")
 
-	req.URL.RawQuery = q.Encode() + "&tx=" + authSettings.transId
+	req.URL.RawQuery = q.Encode() + "&tx=" + authSettings.transactionID
 
 	req.Header.Set("Origin", "https://osbespaceresident.b2clogin.com")
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Accept", "text/html")
-	req.Header.Set("Referer", authSettings.pageUrl)
+	req.Header.Set("Referer", authSettings.pageURL)
 
 	resp, err := o.client.Do(req)
 	if err != nil {
@@ -175,14 +181,14 @@ func (o *TokenProvider) submitCredentials(authSettings authorizeSettings, cookie
 	form.Add("email", o.username)
 	form.Add("password", o.password)
 
-	req, err := http.NewRequest("POST", OCEALoginSelfAssertPage, strings.NewReader(form.Encode()))
+	req, err := o.newRequest("POST", OCEALoginSelfAssertPage, strings.NewReader(form.Encode()))
 	if err != nil {
 		return fmt.Errorf("failed to create http request: %w", err)
 	}
 
 	q := req.URL.Query()
 
-	q.Set("tx", authSettings.transId)
+	q.Set("tx", authSettings.transactionID)
 	q.Set("p", "B2C_1A_SIGNUP_SIGNIN")
 
 	req.URL.RawQuery = q.Encode()
@@ -195,7 +201,7 @@ func (o *TokenProvider) submitCredentials(authSettings authorizeSettings, cookie
 	}
 
 	if csrfToken == "" {
-		return fmt.Errorf("csrf token not found within cookies: %w", err)
+		return fmt.Errorf("csrf token not found within cookies")
 	}
 
 	req.Header.Set("Origin", "https://osbespaceresident.b2clogin.com")
@@ -204,7 +210,7 @@ func (o *TokenProvider) submitCredentials(authSettings authorizeSettings, cookie
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Referer", authSettings.pageUrl)
+	req.Header.Set("Referer", authSettings.pageURL)
 
 	resp, err := o.client.Do(req)
 	if err != nil {
@@ -229,8 +235,8 @@ func (o *TokenProvider) submitCredentials(authSettings authorizeSettings, cookie
 	return nil
 }
 
-func (o *TokenProvider) getAuthorizePage(requestId string, challengeHash string) (authorizeSettings, []*http.Cookie, error) {
-	req, err := http.NewRequest("GET", OCEALoginPage, nil)
+func (o *TokenProvider) getAuthorizePage(requestID string, challengeHash string) (authorizeSettings, []*http.Cookie, error) {
+	req, err := o.newRequest("GET", OCEALoginPage, nil)
 	if err != nil {
 		return authorizeSettings{}, nil, fmt.Errorf("failed to create http request: %w", err)
 	}
@@ -247,7 +253,7 @@ func (o *TokenProvider) getAuthorizePage(requestId string, challengeHash string)
 	q.Set("client_id", OCEALoginClientID)
 	q.Set("scope", OCEALoginScope)
 	q.Set("redirect_uri", OCEAPortalHome)
-	q.Set("client-request-id", requestId)
+	q.Set("client-request-id", requestID)
 	q.Set("response_mode", "fragment")
 	q.Set("response_type", "code")
 	q.Set("x-client-SKU", "msal.js.browser")
@@ -305,26 +311,27 @@ func genLoginState() (string, error) {
 }
 
 type authorizeSettings struct {
-	transId    string
-	pageViewId string
-	crsf       string
-	pageUrl    string
+	state         string
+	transactionID string
+	pageViewID    string
+	csrf          string
+	pageURL       string
 }
 
 var (
-	transIdRegex    = regexp.MustCompile(`"transId"\s*:\s*"(StateProperties=[a-zA-Z0-9]+)"`)
-	pageViewIdRegex = regexp.MustCompile(`"pageViewId"\s*:\s*"([a-f0-9-]+)"`)
-	csrfRegex       = regexp.MustCompile(`"csrf"\s*:\s*"([a-zA-Z0-9=_-]+)"`)
+	transactionIDRegex = regexp.MustCompile(`"transId"\s*:\s*"(StateProperties=[a-zA-Z0-9]+)"`)
+	pageViewIDRegex    = regexp.MustCompile(`"pageViewId"\s*:\s*"([a-f0-9-]+)"`)
+	csrfRegex          = regexp.MustCompile(`"csrf"\s*:\s*"([a-zA-Z0-9=_-]+)"`)
 )
 
 func extractAuthorizeSettings(page []byte, req *http.Request) (authorizeSettings, error) {
-	transId := transIdRegex.FindSubmatch(page)
-	if transId == nil {
+	transactionID := transactionIDRegex.FindSubmatch(page)
+	if transactionID == nil {
 		return authorizeSettings{}, fmt.Errorf("transId not found")
 	}
 
-	pageViewId := pageViewIdRegex.FindSubmatch(page)
-	if pageViewId == nil {
+	pageViewID := pageViewIDRegex.FindSubmatch(page)
+	if pageViewID == nil {
 		return authorizeSettings{}, fmt.Errorf("pageViewId not found")
 	}
 
@@ -334,10 +341,11 @@ func extractAuthorizeSettings(page []byte, req *http.Request) (authorizeSettings
 	}
 
 	settings := authorizeSettings{
-		transId:    string(transId[1]),
-		pageViewId: string(pageViewId[1]),
-		crsf:       string(csrf[1]),
-		pageUrl:    req.URL.String(),
+		state:         req.URL.Query().Get("state"),
+		transactionID: string(transactionID[1]),
+		pageViewID:    string(pageViewID[1]),
+		csrf:          string(csrf[1]),
+		pageURL:       req.URL.String(),
 	}
 
 	return settings, nil
@@ -366,8 +374,7 @@ func extractAuthCode(resp *http.Response) (authCodeResponse, error) {
 	}
 
 	if values.Get("code") == "" {
-		body, _ := io.ReadAll(resp.Body)
-		return authCodeResponse{}, fmt.Errorf("auth code is empty. please make sure that your username and password are valid (response body: %s)", string(body))
+		return authCodeResponse{}, fmt.Errorf("authorization response has no code; check credentials and account requirements")
 	}
 
 	return authCodeResponse{
@@ -394,7 +401,7 @@ func genChallenge() (string, string, error) {
 
 type tokens struct {
 	AccessToken           string `json:"access_token"`
-	IdToken               string `json:"id_token"`
+	IDToken               string `json:"id_token"`
 	TokenType             string `json:"token_type"`
 	NotBefore             int64  `json:"not_before"`
 	ExpiresIn             int64  `json:"expires_in"`
@@ -418,5 +425,18 @@ func extractTokens(resp *http.Response) (tokens, error) {
 		return tokens{}, fmt.Errorf("failed to unmarshal tokens: %w", err)
 	}
 
+	if result.AccessToken == "" {
+		return tokens{}, fmt.Errorf("token response has no access token")
+	}
+	now := time.Now().Unix()
+	if result.NotBefore == 0 {
+		result.NotBefore = now
+	}
+	if result.ExpiresOn == 0 && result.ExpiresIn > 0 {
+		result.ExpiresOn = now + result.ExpiresIn
+	}
+	if result.ExpiresOn <= 0 {
+		return tokens{}, fmt.Errorf("token response has no expiry")
+	}
 	return result, nil
 }

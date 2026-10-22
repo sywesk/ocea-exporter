@@ -63,11 +63,33 @@ type Local struct {
 }
 
 type Device struct {
-	AppareilID             string  `json:"appareilId"`
-	Date                   string  `json:"date"`
-	Emplacement            string  `json:"emplacement"`
-	Fluide                 string  `json:"fluide"`
-	NumeroCompteurAppareil string  `json:"numeroCompteurAppareil"`
-	Unite                  string  `json:"unite"`
-	ValeurIndex            float64 `json:"valeurIndex"`
+	AppareilID             string    `json:"appareilId"`
+	Date                   string    `json:"date"`
+	Emplacement            string    `json:"emplacement"`
+	Fluide                 FluidName `json:"fluide"`
+	NumeroCompteurAppareil string    `json:"numeroCompteurAppareil"`
+	Unite                  string    `json:"unite"`
+	ValeurIndex            float64   `json:"valeurIndex"`
+}
+
+// FluidName is the portal identifier shared by JSON readings and exports.
+type FluidName string
+
+const (
+	FluidColdWater FluidName = "EauFroide"
+	FluidHotWater  FluidName = "EauChaude"
+	FluidHeating   FluidName = "Cetc"
+)
+
+func normalizeFluid(name string) (FluidName, bool) {
+	switch name {
+	case "Eau Froide", string(FluidColdWater):
+		return FluidColdWater, true
+	case "Eau Chaude", string(FluidHotWater):
+		return FluidHotWater, true
+	case "Thermique Chaud", string(FluidHeating):
+		return FluidHeating, true
+	default:
+		return "", false
+	}
 }

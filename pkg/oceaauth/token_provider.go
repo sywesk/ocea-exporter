@@ -1,8 +1,12 @@
 package oceaauth
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -18,6 +22,8 @@ const (
 )
 
 type TokenProvider struct {
+	mu       sync.Mutex
+	ctx      context.Context
 	client   *http.Client
 	tokens   tokens
 	username string
@@ -37,27 +43,40 @@ func NewTokenProvider(username, password string) *TokenProvider {
 	}
 }
 
-func (o *TokenProvider) GetToken() (string, error) {
-	now := time.Now().UTC().Unix()
+func (o *TokenProvider) GetToken() (string, error) { return o.GetTokenContext(context.Background()) }
 
-	// If the access token is still valid, there's nothing to do, just return it.
+func (o *TokenProvider) GetTokenContext(ctx context.Context) (string, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	o.ctx = ctx
+	defer func() { o.ctx = nil }()
+	now := time.Now().Unix()
 	if o.tokens.AccessToken != "" && now < o.tokens.ExpiresOn-10 {
 		return o.tokens.AccessToken, nil
 	}
-
-	// If we do not have a token, or the refresh token is too old, we need to do the whole flow again.
-	// Otherwise, just refresh the token.
-	if o.tokens.AccessToken == "" || now > o.tokens.RefreshTokenExpiresIn+o.tokens.NotBefore-10 {
-		err := o.getTokenFromCredentials()
-		if err != nil {
-			return "", fmt.Errorf("failed to get token from credentials: %w", err)
-		}
-	} else {
+	refreshValid := o.tokens.RefreshToken != "" && (o.tokens.RefreshTokenExpiresIn == 0 || now < o.tokens.NotBefore+o.tokens.RefreshTokenExpiresIn-10)
+	if refreshValid {
 		err := o.refreshToken()
-		if err != nil {
-			return "", fmt.Errorf("failed to refresh token: %w", err)
+		if err == nil {
+			return o.tokens.AccessToken, nil
+		}
+		if !errors.Is(err, errRefreshRejected) {
+			return "", err
 		}
 	}
-
+	if err := o.getTokenFromCredentials(); err != nil {
+		return "", fmt.Errorf("getting token from credentials: %w", err)
+	}
 	return o.tokens.AccessToken, nil
+}
+
+func (o *TokenProvider) newRequest(method, endpoint string, body io.Reader) (*http.Request, error) {
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return http.NewRequestWithContext(ctx, method, endpoint, body)
 }

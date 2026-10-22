@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+config.yaml
+config*.local*.yaml
+state*.json
+*.har
+*.out
+*.exe

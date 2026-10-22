@@ -53,7 +53,7 @@ func TestExtractAuthorizeSettings(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if settings.transId != "StateProperties=abc123" || settings.pageViewId != "1234-abcd" || settings.crsf != "abc_123==" {
+		if settings.transactionID != "StateProperties=abc123" || settings.pageViewID != "1234-abcd" || settings.csrf != "abc_123==" {
 			t.Fatalf("unexpected settings: %+v", settings)
 		}
 	}

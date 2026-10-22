@@ -26,7 +26,7 @@ func TestMergeDevices(t *testing.T) {
 			}
 		})
 	}
-	if containsDevices([]oceaapi.Device{cold, hot}, []oceaapi.Device{cold, heat}) {
-		t.Fatal("equal counts must not hide a missing meter")
+	if _, err := currentReadings([]oceaapi.Device{cold, hot}, []oceaapi.Meter{{ID: "cold"}, {ID: "heat"}}); err == nil {
+		t.Fatal("equal counts must not hide a missing current meter")
 	}
 }

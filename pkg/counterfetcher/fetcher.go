@@ -1,24 +1,41 @@
 package counterfetcher
 
 import (
+	"context"
 	"fmt"
+	"math"
+	"reflect"
+	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
 	"github.com/sywesk/ocea-exporter/pkg/oceaauth"
 	"go.uber.org/zap"
 )
 
-/*
-CounterFetcher is the abstraction that will maintain up-to-date counter values.
-*/
+// meterAPI exposes only the portal operations used by the poller.
+type meterAPI interface {
+	GetResident() (oceaapi.Resident, error)
+	GetLocal(string) (oceaapi.Local, error)
+	GetMeters(string) ([]oceaapi.Meter, error)
+	GetDevices(string, time.Time) ([]oceaapi.Device, error)
+	GetOccupantDevices(string, time.Time) ([]oceaapi.Device, error)
+}
+
+// CounterFetcher publishes complete, persisted snapshots of the current meters.
+// Its state is owned by a single worker; listeners may be registered concurrently.
 type CounterFetcher struct {
 	settings  Settings
 	state     state
-	healthy   bool // Indicates if the last refresh of the counters was successful
-	ready     bool // Indicates if the counters are ready
-	apiClient oceaapi.APIClient
+	apiClient meterAPI
+	store     stateStore
+	now       func() time.Time
+	metrics   *fetcherMetrics
+	mu        sync.Mutex
 	listeners []chan<- Notification
+	started   bool
+	done      chan struct{}
 }
 
 type Settings struct {
@@ -32,237 +49,224 @@ func New(settings Settings) (*CounterFetcher, error) {
 	if settings.StateFilePath == "" {
 		return nil, fmt.Errorf("empty state file location")
 	}
-
-	return &CounterFetcher{
-		settings: settings,
-	}, nil
+	if settings.PollInterval <= 0 {
+		return nil, fmt.Errorf("poll interval must be positive")
+	}
+	return &CounterFetcher{settings: settings, store: fileStateStore{}, now: time.Now, metrics: newFetcherMetrics(), done: make(chan struct{})}, nil
 }
 
 func (c *CounterFetcher) RegisterListener(listener chan<- Notification) {
+	if listener == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.listeners = append(c.listeners, listener)
 }
 
-func (c *CounterFetcher) Start() error {
-	var err error
-
-	c.state, err = loadState(c.settings.StateFilePath)
-	if err != nil {
-		return fmt.Errorf("failed to load state: %w", err)
+func (c *CounterFetcher) Start(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.started {
+		return fmt.Errorf("fetcher already started")
 	}
-
-	tokenProvider := oceaauth.NewTokenProvider(c.settings.Username, c.settings.Password)
-	c.apiClient = oceaapi.NewClient(tokenProvider)
-
-	go c.worker()
+	snapshot, err := c.store.Load(c.settings.StateFilePath)
+	if err != nil {
+		return fmt.Errorf("loading state: %w", err)
+	}
+	c.state = snapshot
+	if c.apiClient == nil {
+		c.apiClient = oceaapi.NewClient(oceaauth.NewTokenProvider(c.settings.Username, c.settings.Password)).WithContext(ctx)
+	}
+	c.started = true
+	go c.worker(ctx)
 	return nil
 }
 
-func (c *CounterFetcher) worker() {
-	zap.L().Info("fetch worker started")
+func (c *CounterFetcher) Done() <-chan struct{} { return c.done }
 
+func (c *CounterFetcher) worker(ctx context.Context) {
+	defer close(c.done)
+	ticker := time.NewTicker(c.settings.PollInterval)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := c.safePoll(); err != nil {
+			zap.L().Error("failed to refresh meters; will retry", zap.Error(err))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// Recover at the iteration boundary, so unexpected parser failures do not cause
+// recursive restarts, tight loops, or abandoned tickers.
+func (c *CounterFetcher) safePoll() (err error) {
 	defer func() {
-		if err := recover(); err != nil {
-			zap.L().Error("fetch worker crashed", zap.Any("panic_error", err))
-			c.worker()
+		if p := recover(); p != nil {
+			c.metrics.recordFailure()
+			err = fmt.Errorf("meter poll panicked: %v", p)
 		}
 	}()
+	return c.poll()
+}
 
-	t := time.NewTicker(c.settings.PollInterval)
-
-	for {
-		// If the state is empty, then we need to fetch everything first.
-		if c.state.AccountData.Resident.NomClient == "" {
-			err := c.fetchInitialState()
-			if err != nil {
-				zap.L().Error("failed to fetch initial state, will retry next time", zap.Error(err))
-				<-t.C
-				continue
-			}
-		}
-
-		err := c.fetchCounters()
+func (c *CounterFetcher) poll() (err error) {
+	defer func() {
 		if err != nil {
-			zap.L().Error("failed to fetch counters, will retry next time", zap.Error(err))
-			c.healthy = false
-		} else {
-			c.healthy = true
-			c.ready = true
-
-			c.notifyListeners()
-			c.updateCounterMetrics()
+			c.metrics.recordFailure()
 		}
-
-		<-t.C
+	}()
+	account := c.state.AccountData
+	if account.Local.Local.ID == "" || len(account.Resident.Occupations) == 0 {
+		account, err = c.fetchInitialState()
+		if err != nil {
+			return err
+		}
 	}
+	if err := c.fetchCounters(account); err != nil {
+		return err
+	}
+	c.metrics.recordSuccess(c.state, c.now())
+	c.notifyListeners()
+	return nil
 }
 
-type Notification struct {
-	CounterStates []CounterState
-}
+type Notification struct{ CounterStates []CounterState }
 
 func (c *CounterFetcher) notifyListeners() {
-	var states []CounterState
-
-	for _, state := range c.state.CounterStates {
-		clonedState := state.Clone()
-		clonedState.AbsoluteIndex = round3(clonedState.AbsoluteIndex)
-		states = append(states, state.Clone())
-	}
-
-	notif := Notification{
-		CounterStates: states,
-	}
-
-	for _, listener := range c.listeners {
+	c.mu.Lock()
+	listeners := append([]chan<- Notification(nil), c.listeners...)
+	c.mu.Unlock()
+	for _, listener := range listeners {
+		// Each consumer owns its snapshot; mutations cannot affect another consumer.
+		states := append([]CounterState(nil), c.state.CounterStates...)
+		for i := range states {
+			states[i].AbsoluteIndex = round3(states[i].AbsoluteIndex)
+		}
 		select {
-		case listener <- notif:
-			continue
+		case listener <- Notification{CounterStates: states}:
 		default:
-			zap.L().Warn("failed to notify a listener: channel blocked")
+			zap.L().Warn("listener channel full; skipping notification")
 		}
 	}
 }
 
-func (c *CounterFetcher) updateCounterMetrics() {
-	localID := c.state.AccountData.Local.Local.ID
-
-	// Expose an aggregate time series for each fluid, to be retro-compatible with existing deployments.
-	fluidToAggregateIndex := map[string]float64{}
-	for _, state := range c.state.CounterStates {
-		fluidToAggregateIndex[state.Fluid] += state.AbsoluteIndex
-	}
-	for fluid, aggregateIndex := range fluidToAggregateIndex {
-		index.WithLabelValues(fluid, localID).Set(round3(aggregateIndex))
-	}
-
-	// Expose a per-meter time series.
-	for _, state := range c.state.CounterStates {
-		meterIndex.WithLabelValues(state.SerialNumber, state.Fluid, localID).Set(round3(state.AbsoluteIndex))
-	}
-}
-
-func (c *CounterFetcher) fetchCounters() error {
-	devices, err := c.fetchDevices(c.state.AccountData.Local.Local.ID, c.state.AccountData.Resident.Occupations[0].TypeOccupation, false)
-	if err != nil {
-		return fmt.Errorf("fetching devices: %v", err)
-	}
-	c.state.AccountData.Devices = devices
-
-	countersUpdated, err := c.updateCounters(c.state.AccountData.Devices)
-	if err != nil {
-		return fmt.Errorf("updating counters: %w", err)
-	}
-
-	if countersUpdated {
-		err = c.state.save(c.settings.StateFilePath)
-		if err != nil {
-			return fmt.Errorf("saving state: %w", err)
-		}
-	} else {
-		zap.L().Info("no counters were updated, skipping state update")
-	}
-
-	zap.L().Info("fetched counters")
-	return nil
-}
-
-func (c *CounterFetcher) fetchInitialState() error {
-	resident, err := c.apiClient.GetResident()
-	if err != nil {
-		return fmt.Errorf("failed to get resident: %w", err)
-	}
-	zap.L().Info("fetched resident",
-		zap.String("first_name", resident.Resident.Nom),
-		zap.String("id", resident.Resident.ID))
-
-	if len(resident.Occupations) == 0 {
+func (c *CounterFetcher) fetchCounters(account rawAccountData) error {
+	if len(account.Resident.Occupations) == 0 {
 		return fmt.Errorf("no occupation found")
 	}
-
-	localID := resident.Occupations[0].LogementID
-	zap.L().Info("found local", zap.String("local_id", localID))
-
-	if len(resident.Occupations) > 1 {
-		zap.L().Warn("multiple 'occupation' were found. please report this to the maintainer",
-			zap.Int("occupation_count", len(resident.Occupations)))
-	}
-
-	local, err := c.apiClient.GetLocal(localID)
+	devices, err := c.fetchDevices(account.Local.Local.ID, account.Resident.Occupations[0].TypeOccupation)
 	if err != nil {
-		return fmt.Errorf("failed to get local %s: %w", localID, err)
+		return fmt.Errorf("fetching devices: %w", err)
 	}
-	zap.L().Info("fetched local", zap.String("local_id", localID))
-
-	if len(local.FluidesRestitues) == 0 {
-		return fmt.Errorf("no fluid found for local %s", localID)
-	}
-
-	// Fetch all devices and force a full retrieval.
-	devices, err := c.fetchDevices(localID, resident.Occupations[0].TypeOccupation, true)
+	counters, err := buildCounterStates(devices)
 	if err != nil {
-		return fmt.Errorf("failed to reset counters: %w", err)
+		return err
 	}
-
-	c.state.AccountData = rawAccountData{
-		Resident: resident,
-		Local:    local,
-		Devices:  devices,
+	account.Devices = devices
+	next := state{AccountData: account, CounterStates: counters}
+	if !reflect.DeepEqual(c.state, next) {
+		if err := c.store.Save(c.settings.StateFilePath, next); err != nil {
+			return fmt.Errorf("saving state: %w", err)
+		}
+		c.state = next
 	}
-
-	zap.L().Info("fetched initial state")
 	return nil
 }
 
-// fetchDevices will grab the actual index of all counters.
-//
-// It does so by calling the API, but there's a catch: if a counter hasn't reported yet for the current day,
-// it will be missing from the response. Thus, we need to go back 1 day earlier to get the last. This behavior can
-// be forced using the forceFullRetrieval parameter.
-func (c *CounterFetcher) fetchDevices(localID, occupation string, forceFullRetrieval bool) ([]oceaapi.Device, error) {
-	if occupation == "Occupant" {
-		return c.apiClient.GetOccupantDevices(localID, time.Now())
-	}
-	devices, err := c.apiClient.GetDevices(localID, time.Now())
+func (c *CounterFetcher) fetchInitialState() (rawAccountData, error) {
+	resident, err := c.apiClient.GetResident()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get devices: %w", err)
+		return rawAccountData{}, fmt.Errorf("getting resident: %w", err)
 	}
+	if len(resident.Occupations) == 0 {
+		return rawAccountData{}, fmt.Errorf("no occupation found")
+	}
+	if len(resident.Occupations) > 1 {
+		zap.L().Warn("multiple occupations found; using the first", zap.Int("count", len(resident.Occupations)))
+	}
+	localID := resident.Occupations[0].LogementID
+	if localID == "" {
+		return rawAccountData{}, fmt.Errorf("occupation has no local ID")
+	}
+	local, err := c.apiClient.GetLocal(localID)
+	if err != nil {
+		return rawAccountData{}, fmt.Errorf("getting local: %w", err)
+	}
+	if local.Local.ID != localID {
+		return rawAccountData{}, fmt.Errorf("local ID does not match occupation")
+	}
+	if len(local.FluidesRestitues) == 0 {
+		return rawAccountData{}, fmt.Errorf("no fluid found for local %s", localID)
+	}
+	return rawAccountData{Resident: resident, Local: local}, nil
+}
 
-	if !forceFullRetrieval && len(devices) > 0 && containsDevices(devices, c.state.AccountData.Devices) {
+func (c *CounterFetcher) fetchDevices(localID, occupation string) ([]oceaapi.Device, error) {
+	now := c.now()
+	if occupation == "Occupant" {
+		return c.apiClient.GetOccupantDevices(localID, now)
+	}
+	if occupation != "Proprietaire" {
+		return nil, fmt.Errorf("unsupported occupation %q", occupation)
+	}
+	meters, err := c.apiClient.GetMeters(localID)
+	if err != nil {
+		return nil, fmt.Errorf("getting current inventory: %w", err)
+	}
+	if len(meters) == 0 {
+		return nil, fmt.Errorf("no current meters")
+	}
+	today, err := c.apiClient.GetDevices(localID, now)
+	if err != nil {
+		return nil, fmt.Errorf("getting today's readings: %w", err)
+	}
+	if devices, err := currentReadings(today, meters); err == nil {
 		return devices, nil
 	}
-
-	yesterdayDevices, err := c.apiClient.GetDevices(localID, time.Now().AddDate(0, 0, -1))
+	yesterday, err := c.apiClient.GetDevices(localID, now.AddDate(0, 0, -1))
 	if err != nil {
-		return nil, fmt.Errorf("failed to get yesterday devices: %w", err)
+		return nil, fmt.Errorf("getting yesterday's readings: %w", err)
 	}
-
-	completeList := mergeDevices(devices, yesterdayDevices)
-
-	if len(completeList) == 0 || !containsDevices(completeList, c.state.AccountData.Devices) {
-		return nil, fmt.Errorf("not enough devices")
-	} else if len(completeList) > len(c.state.AccountData.Devices) {
-		zap.L().Warn("found additional devices",
-			zap.Int("old_count", len(c.state.AccountData.Devices)),
-			zap.Int("new_count", len(completeList)))
-	}
-
-	return completeList, nil
+	return currentReadings(mergeDevices(today, yesterday), meters)
 }
 
-func containsDevices(devices, expected []oceaapi.Device) bool {
-	ids := make(map[string]bool, len(devices))
-	for _, device := range devices {
-		ids[device.AppareilID] = true
-	}
-	for _, device := range expected {
-		if !ids[device.AppareilID] {
-			return false
+// The current inventory, rather than the old state file, is authoritative.
+// A missing current meter fails the snapshot; retired meters are discarded.
+func currentReadings(readings []oceaapi.Device, meters []oceaapi.Meter) ([]oceaapi.Device, error) {
+	byID := make(map[string]oceaapi.Device, len(readings))
+	for _, device := range readings {
+		if _, exists := byID[device.AppareilID]; exists {
+			return nil, fmt.Errorf("duplicate reading for meter %s", device.AppareilID)
 		}
+		byID[device.AppareilID] = device
 	}
-	return true
+	devices := make([]oceaapi.Device, 0, len(meters))
+	seen := make(map[string]bool, len(meters))
+	for _, meter := range meters {
+		if meter.ID == "" || seen[meter.ID] {
+			return nil, fmt.Errorf("invalid or duplicate meter ID %q", meter.ID)
+		}
+		seen[meter.ID] = true
+		device, ok := byID[meter.ID]
+		if !ok {
+			return nil, fmt.Errorf("no reading for current meter %s", meter.ID)
+		}
+		if meter.Serial != "" && meter.Serial != device.NumeroCompteurAppareil {
+			return nil, fmt.Errorf("serial mismatch for meter %s", meter.ID)
+		}
+		devices = append(devices, device)
+	}
+	return devices, nil
 }
 
-// Keep today's readings and back-fill missing meters from yesterday.
+// Keep today's readings and backfill missing meters from yesterday.
 func mergeDevices(today, yesterday []oceaapi.Device) []oceaapi.Device {
 	merged := append([]oceaapi.Device(nil), today...)
 	ids := make(map[string]bool, len(today))
@@ -278,37 +282,28 @@ func mergeDevices(today, yesterday []oceaapi.Device) []oceaapi.Device {
 	return merged
 }
 
-func (c *CounterFetcher) updateCounters(devices []oceaapi.Device) (bool, error) {
-	if len(c.state.CounterStates) == 0 {
-		c.state.CounterStates = make([]CounterState, len(devices))
-		for i, device := range devices {
-			c.state.CounterStates[i] = CounterState{
-				Fluid:         device.Fluide,
-				AbsoluteIndex: device.ValeurIndex,
-				SerialNumber:  device.NumeroCompteurAppareil,
-			}
-		}
-		return true, nil
+func buildCounterStates(devices []oceaapi.Device) ([]CounterState, error) {
+	if len(devices) == 0 {
+		return nil, fmt.Errorf("empty meter snapshot")
 	}
-
-	serialToDevice := map[string]oceaapi.Device{}
+	states := make([]CounterState, 0, len(devices))
+	serials := make(map[string]bool, len(devices))
 	for _, device := range devices {
-		serialToDevice[device.NumeroCompteurAppareil] = device
-	}
-
-	updated := false
-	for i, state := range c.state.CounterStates {
-		device, ok := serialToDevice[state.SerialNumber]
-		if !ok {
-			return false, fmt.Errorf("no device with serial %s", state.SerialNumber)
+		serial := device.NumeroCompteurAppareil
+		if serial == "" || serials[serial] {
+			return nil, fmt.Errorf("missing or duplicate meter serial %q", serial)
 		}
-		if state.AbsoluteIndex == device.ValeurIndex {
-			continue
+		if device.Fluide == "" {
+			return nil, fmt.Errorf("missing fluid for meter %s", serial)
 		}
-		c.state.CounterStates[i].AbsoluteIndex = device.ValeurIndex
-		updated = true
+		if math.IsNaN(device.ValeurIndex) || math.IsInf(device.ValeurIndex, 0) || device.ValeurIndex < 0 {
+			return nil, fmt.Errorf("invalid index for meter %s", serial)
+		}
+		serials[serial] = true
+		states = append(states, CounterState{Fluid: device.Fluide, SerialNumber: serial, AbsoluteIndex: device.ValeurIndex, ReadingDate: device.Date})
 	}
-
-	zap.L().Info("updated counters")
-	return updated, nil
+	return states, nil
 }
+
+func (c *CounterFetcher) Describe(ch chan<- *prometheus.Desc) { c.metrics.describe(ch) }
+func (c *CounterFetcher) Collect(ch chan<- prometheus.Metric) { c.metrics.collect(ch) }

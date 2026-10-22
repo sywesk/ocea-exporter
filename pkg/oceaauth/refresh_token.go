@@ -1,30 +1,40 @@
 package oceaauth
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/google/uuid"
-	"go.uber.org/zap"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 var (
-	errNoRefreshToken = fmt.Errorf("no refresh token")
+	errNoRefreshToken  = errors.New("no refresh token")
+	errRefreshRejected = errors.New("refresh token rejected")
 )
 
 func (o *TokenProvider) refreshToken() error {
-	var err error
-
 	if o.tokens.RefreshToken == "" {
 		return errNoRefreshToken
 	}
 
-	o.tokens, err = o.exchangeRefreshToken(o.tokens.RefreshToken)
+	next, err := o.exchangeRefreshToken(o.tokens.RefreshToken)
 	if err != nil {
 		return fmt.Errorf("failed to exchange token: %w", err)
 	}
 
+	if next.RefreshToken == "" {
+		next.RefreshToken = o.tokens.RefreshToken
+	}
+	if next.RefreshTokenExpiresIn == 0 {
+		next.RefreshTokenExpiresIn = o.tokens.RefreshTokenExpiresIn
+		next.NotBefore = o.tokens.NotBefore
+	}
+	o.tokens = next
 	zap.L().Info("auth: got token from refresh")
 	return nil
 }
@@ -39,7 +49,7 @@ func (o *TokenProvider) exchangeRefreshToken(refreshToken string) (tokens, error
 	form.Add("client-request-id", uuid.NewString())
 	form.Add("refresh_token", refreshToken)
 
-	req, err := http.NewRequest("POST", OCEATokenEndpoint, strings.NewReader(form.Encode()))
+	req, err := o.newRequest("POST", OCEATokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return tokens{}, fmt.Errorf("failed to create http request: %w", err)
 	}
@@ -56,6 +66,14 @@ func (o *TokenProvider) exchangeRefreshToken(refreshToken string) (tokens, error
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusBadRequest {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&failure) == nil && failure.Error == "invalid_grant" {
+			return tokens{}, errRefreshRejected
+		}
+	}
 	if resp.StatusCode != 200 {
 		return tokens{}, fmt.Errorf("failed exchange refresh token: bad status code (expected 200): %d", resp.StatusCode)
 	}

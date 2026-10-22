@@ -2,12 +2,12 @@ package counterfetcher
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path"
+	"path/filepath"
 
 	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
-	"go.uber.org/zap"
 )
 
 type state struct {
@@ -15,61 +15,69 @@ type state struct {
 	AccountData   rawAccountData `json:"accountData"`
 }
 
+type stateStore interface {
+	Load(string) (state, error)
+	Save(string, state) error
+}
+
+type fileStateStore struct{}
+
+func (fileStateStore) Load(file string) (state, error) { return loadState(file) }
+func (fileStateStore) Save(file string, s state) error { return s.save(file) }
+
+// save replaces the previous snapshot only after a complete, synced write.
 func (s state) save(filePath string) error {
-	bytes, err := json.Marshal(s)
+	data, err := json.Marshal(s)
 	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
+		return fmt.Errorf("marshaling state: %w", err)
 	}
-
-	err = os.MkdirAll(path.Dir(filePath), 0600)
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("creating state directory: %w", err)
+	}
+	temp, err := os.CreateTemp(dir, ".ocea-state-*")
 	if err != nil {
-		return fmt.Errorf("failed to mkdirall: %w", err)
+		return fmt.Errorf("creating temporary state: %w", err)
 	}
-
-	err = os.WriteFile(filePath, bytes, 0600)
-	if err != nil {
-		return fmt.Errorf("failed to write state: %w", err)
+	defer os.Remove(temp.Name())
+	// CreateTemp uses 0600; the new file never exposes account data publicly.
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return fmt.Errorf("writing state: %w", err)
 	}
-
-	zap.L().Info("state successfully written", zap.String("path", filePath))
-
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return fmt.Errorf("syncing state: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("closing state: %w", err)
+	}
+	if err := os.Rename(temp.Name(), filePath); err != nil {
+		return fmt.Errorf("replacing state: %w", err)
+	}
 	return nil
 }
 
 type CounterState struct {
-	Fluid         string  `json:"fluid"`
-	AbsoluteIndex float64 `json:"absoluteIndex"`
-	SerialNumber  string  `json:"serialNumber"`
+	Fluid         oceaapi.FluidName `json:"fluid"`
+	AbsoluteIndex float64           `json:"absoluteIndex"`
+	SerialNumber  string            `json:"serialNumber"`
+	ReadingDate   string            `json:"readingDate,omitempty"`
 }
 
-func (c CounterState) Clone() CounterState {
-	return CounterState{
-		Fluid:         c.Fluid,
-		AbsoluteIndex: c.AbsoluteIndex,
-		SerialNumber:  c.SerialNumber,
-	}
-}
-
-func loadState(path string) (state, error) {
-	if _, err := os.Stat(path); err != nil {
-		zap.L().Info("state file not found, skipping load", zap.String("path", path))
+func loadState(filePath string) (state, error) {
+	data, err := os.ReadFile(filePath)
+	if errors.Is(err, os.ErrNotExist) {
 		return state{}, nil
 	}
-
-	data, err := os.ReadFile(path)
 	if err != nil {
-		return state{}, fmt.Errorf("failed to read state file: %w", err)
+		return state{}, fmt.Errorf("reading state: %w", err)
 	}
-
-	var diskState state
-	err = json.Unmarshal(data, &diskState)
-	if err != nil {
-		return state{}, fmt.Errorf("failed to unmarshal state file: %w", err)
+	var snapshot state
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return state{}, fmt.Errorf("decoding state: %w", err)
 	}
-
-	zap.L().Info("state successfully loaded", zap.String("path", path))
-
-	return diskState, nil
+	return snapshot, nil
 }
 
 type rawAccountData struct {

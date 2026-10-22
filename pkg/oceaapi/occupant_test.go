@@ -1,6 +1,7 @@
 package oceaapi
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -16,7 +17,7 @@ import (
 )
 
 var exportDay = time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
-var exportMeters = []meter{{ID: "hot", PDSID: "pds-hot", Serial: "hot-serial"}, {ID: "heat", PDSID: "pds-heat", Serial: "heat-serial"}}
+var exportMeters = []Meter{{ID: "hot", PDSID: "pds-hot", Serial: "hot-serial"}, {ID: "heat", PDSID: "pds-heat", Serial: "heat-serial"}}
 
 func sampleExport(t *testing.T, missing bool) []byte {
 	t.Helper()
@@ -74,6 +75,61 @@ func TestOccupantExport(t *testing.T) {
 	}
 	if _, err := parseOccupantExport([]byte(`{"error":"no export"}`), exportMeters, exportDay); err == nil {
 		t.Fatal("expected invalid workbook error")
+	}
+}
+
+func TestOccupantExportInvalidCells(t *testing.T) {
+	for _, tc := range []struct {
+		name, cell string
+		value      interface{}
+	}{
+		{"bad header", "A2", "Not Fluide"},
+		{"bad date", "C4", "not-a-date"},
+		{"bad index", "D4", "not-an-index"},
+		{"nan", "D4", "NaN"},
+		{"infinity", "D4", "+Inf"},
+		{"negative index", "D4", -1},
+		{"unknown fluid", "A4", "Unknown"},
+		{"wrong unit", "E4", "litres"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			book, err := excelize.OpenReader(bytes.NewReader(sampleExport(t, false)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer book.Close()
+			if err := book.SetCellValue("hot-serial - readings", tc.cell, tc.value); err != nil {
+				t.Fatal(err)
+			}
+			data, err := book.WriteToBuffer()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := parseOccupantExport(data.Bytes(), exportMeters, exportDay); err == nil {
+				t.Fatal("accepted malformed export")
+			}
+		})
+	}
+}
+
+func TestOccupantExportDecimalCommaAndWhitespace(t *testing.T) {
+	book, err := excelize.OpenReader(bytes.NewReader(sampleExport(t, false)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer book.Close()
+	for cell, value := range map[string]string{"A4": " Eau Chaude ", "C4": " 21/10/2026 ", "D4": " 124,325 ", "E4": " m3 "} {
+		if err := book.SetCellValue("hot-serial - readings", cell, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := book.WriteToBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	devices, err := parseOccupantExport(data.Bytes(), exportMeters, exportDay)
+	if err != nil || devices[0].ValeurIndex != 124.325 {
+		t.Fatalf("valid export rejected: %+v, %v", devices, err)
 	}
 }
 
@@ -156,7 +212,7 @@ func TestOccupantHAR(t *testing.T) {
 	if err := json.Unmarshal(data, &har); err != nil {
 		t.Fatal(err)
 	}
-	var meters []meter
+	var meters []Meter
 	var workbook []byte
 	var owner []Device
 	for _, entry := range har.Log.Entries {

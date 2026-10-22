@@ -1,8 +1,14 @@
 package homeassistant
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"strings"
 
-const MANUFACTURER_NAME = "Ocea"
+	"github.com/sywesk/ocea-exporter/pkg/oceaapi"
+)
+
+const manufacturerName = "Ocea"
 
 type StateClass string
 
@@ -39,20 +45,20 @@ type FluidDescription struct {
 	Name        string
 }
 
-var fluidDescriptions = map[string]FluidDescription{
-	"Cetc": {
+var fluidDescriptions = map[oceaapi.FluidName]FluidDescription{
+	oceaapi.FluidHeating: {
 		Unit:        KiloWattHourUnit,
 		DeviceClass: EnergyDeviceClass,
 		Icon:        RadiatorIcon,
 		Name:        "heating_energy_meter",
 	},
-	"EauFroide": {
+	oceaapi.FluidColdWater: {
 		Unit:        CubicMeterUnit,
 		DeviceClass: WaterDeviceClass,
 		Icon:        WaterIcon,
 		Name:        "water_meter",
 	},
-	"EauChaude": {
+	oceaapi.FluidHotWater: {
 		Unit:        CubicMeterUnit,
 		DeviceClass: WaterDeviceClass,
 		Icon:        WaterThermometerIcon,
@@ -60,7 +66,7 @@ var fluidDescriptions = map[string]FluidDescription{
 	},
 }
 
-var ErrUnknownFluid = fmt.Errorf("unknown fluid")
+var ErrUnknownFluid = errors.New("unknown fluid")
 
 type DeviceConfig struct {
 	Identifiers  []string `json:"identifiers"`
@@ -80,7 +86,7 @@ type SensorConfig struct {
 	Device            DeviceConfig `json:"device"`
 }
 
-func getFluidSensorConfig(fluid string, serial string, stateTopic string) (SensorConfig, error) {
+func getFluidSensorConfig(fluid oceaapi.FluidName, serial string, stateTopic string) (SensorConfig, error) {
 	desc, ok := fluidDescriptions[fluid]
 	if !ok {
 		return SensorConfig{}, ErrUnknownFluid
@@ -99,7 +105,7 @@ func getFluidSensorConfig(fluid string, serial string, stateTopic string) (Senso
 			Identifiers: []string{
 				serial,
 			},
-			Manufacturer: MANUFACTURER_NAME,
+			Manufacturer: manufacturerName,
 			Name:         fmt.Sprintf("%s %s", fluid, serial),
 		},
 	}, nil
@@ -110,7 +116,10 @@ type SensorTopics struct {
 	State  string
 }
 
-func buildSensorTopics(fluid string, serial string) (SensorTopics, error) {
+func buildSensorTopics(fluid oceaapi.FluidName, serial string) (SensorTopics, error) {
+	if serial == "" || strings.ContainsAny(serial, "/#+\x00") {
+		return SensorTopics{}, fmt.Errorf("invalid meter serial %q", serial)
+	}
 	desc, ok := fluidDescriptions[fluid]
 	if !ok {
 		return SensorTopics{}, ErrUnknownFluid
@@ -126,7 +135,7 @@ func buildSensorTopics(fluid string, serial string) (SensorTopics, error) {
 
 // buildOldSensorTopics builds the previous MQTT topics that were removed, just to be able to publish an empty packet to
 // remove the previous sensors from homeassistant auto-discovery.
-func buildOldSensorTopics(fluid string) SensorTopics {
+func buildOldSensorTopics(fluid oceaapi.FluidName) SensorTopics {
 	desc := fluidDescriptions[fluid]
 	baseTopic := fmt.Sprintf("homeassistant/sensor/ocea_exporter/%s", desc.Name)
 	return SensorTopics{

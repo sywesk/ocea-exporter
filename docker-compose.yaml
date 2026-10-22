@@ -1,9 +1,14 @@
-version: "3"
-
 services:
   ocea-exporter:
-    image: "sywesk/ocea-exporter:0.3.0"
-    container_name: "ocea-exporter"
+    build: .
+    image: ocea-exporter:local
+    container_name: ocea-exporter
     restart: unless-stopped
+    environment:
+      OCEA_EXPORTER_STATE_FILE_PATH: /data/state.json
     volumes:
-      - "./config.yaml:/app/config.yaml:ro"
+      - ./config.yaml:/app/config.yaml:ro
+      - ocea-state:/data
+
+volumes:
+  ocea-state:

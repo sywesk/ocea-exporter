@@ -2,13 +2,16 @@ package oceaapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"go.uber.org/zap"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const (
@@ -16,7 +19,7 @@ const (
 )
 
 var (
-	ErrMaintenance = fmt.Errorf("api is under maintenance")
+	ErrMaintenance = errors.New("api is under maintenance")
 )
 
 type TokenProvider interface {
@@ -26,18 +29,14 @@ type TokenProvider interface {
 type APIClient struct {
 	tokenProvider TokenProvider
 	client        *http.Client
-}
-
-type MaintenanceResponse struct {
-	IsOnline           bool   `json:"IsOnline"`
-	MaintenancePageUrl string `json:"MaintenancePageUrl"`
-	ErrorMessage       string `json:"ErrorMessage"`
+	ctx           context.Context
 }
 
 func NewClient(provider TokenProvider) APIClient {
 	client := APIClient{
 		tokenProvider: provider,
 		client:        &http.Client{Timeout: 30 * time.Second},
+		ctx:           context.Background(),
 	}
 
 	return client
@@ -57,7 +56,7 @@ func (o APIClient) GetResident() (Resident, error) {
 func (o APIClient) GetLocal(localID string) (Local, error) {
 	local := Local{}
 
-	err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID, nil, &local)
+	err := o.do("GET", OCEAAPIBaseURL+"/local/"+url.PathEscape(localID), nil, &local)
 	if err != nil {
 		return local, fmt.Errorf("failed to get local: %w", err)
 	}
@@ -72,11 +71,9 @@ type localIndexDemandRequest struct {
 }
 
 func (o APIClient) GetDevices(localID string, statementDate time.Time) ([]Device, error) {
-	var meters []struct {
-		PDSID string `json:"pdsId"`
-	}
-	if err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/appareils", nil, &meters); err != nil {
-		return nil, fmt.Errorf("failed to get meters: %w", err)
+	meters, err := o.GetMeters(localID)
+	if err != nil {
+		return nil, err
 	}
 	pdsIDs := make([]string, 0, len(meters))
 	seen := make(map[string]bool)
@@ -105,26 +102,39 @@ func (o APIClient) GetDevices(localID string, statementDate time.Time) ([]Device
 		"dateDemande":    {date + "T00:00:00.000Z"},
 		"raisonConforme": {"RealisationEtatDesLieux"},
 	}
-	err := o.do("GET", OCEAAPIBaseURL+"/local/"+localID+"/token?"+query.Encode(), nil, &token)
+	err = o.do("GET", OCEAAPIBaseURL+"/local/"+url.PathEscape(localID)+"/token?"+query.Encode(), nil, &token)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token: %w", err)
-	} else if token == "" {
+	}
+	if token == "" {
 		return nil, fmt.Errorf("failed to get token: (empty)")
 	}
 
-	var deviceList []Device
+	// A pointer distinguishes a genuine zero from a missing/null reading.
+	var readings []struct {
+		Device
+		Index *float64 `json:"valeurIndex"`
+	}
 	indexRequest := localIndexDemandRequest{
 		LocalID: localID,
 		Token:   token,
 		PDSIDs:  pdsIDs,
 	}
 
-	err = o.do("POST", OCEAAPIBaseURL+"/local/demande", &indexRequest, &deviceList)
+	err = o.do("POST", OCEAAPIBaseURL+"/local/demande", &indexRequest, &readings)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get indexes: %w", err)
 	}
 
-	return deviceList, nil
+	devices := make([]Device, 0, len(readings))
+	for _, reading := range readings {
+		if reading.Index == nil {
+			continue
+		}
+		reading.Device.ValeurIndex = *reading.Index
+		devices = append(devices, reading.Device)
+	}
+	return devices, nil
 }
 
 func (o APIClient) do(method, url string, request, response interface{}) error {
@@ -140,66 +150,83 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 	return nil
 }
 
-func (o APIClient) doRequest(method, url string, request interface{}, accept string) ([]byte, error) {
-	req, err := http.NewRequest(method, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create new request: %w", err)
+// WithContext binds portal calls, including authentication, to the worker lifetime.
+func (o APIClient) WithContext(ctx context.Context) APIClient { o.ctx = ctx; return o }
+
+// GetMeters is the current inventory; readings may contain only a subset of it.
+func (o APIClient) GetMeters(localID string) ([]Meter, error) {
+	var meters []Meter
+	if err := o.do("GET", OCEAAPIBaseURL+"/local/"+url.PathEscape(localID)+"/appareils", nil, &meters); err != nil {
+		return nil, fmt.Errorf("getting meters: %w", err)
 	}
-	zap.L().Debug("HTTP request", zap.String("url", url), zap.String("method", method))
-
-	if request != nil {
-		reqBytes, err := json.Marshal(request)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request: %w", err)
-		}
-
-		req.Body = io.NopCloser(bytes.NewReader(reqBytes))
-		req.Header.Set("Content-Type", "application/json")
+	if len(meters) == 0 {
+		return nil, fmt.Errorf("no meter found for local %s", localID)
 	}
-
-	token, err := o.tokenProvider.GetToken()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get token from provider: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	req.Header.Set("Accept", accept)
-
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to do HTTP request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	zap.L().Debug("HTTP response status", zap.String("status", resp.Status))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if isMaintenanceError(resp) {
-			return nil, ErrMaintenance
-		}
-		return nil, fmt.Errorf("HTTP request failed: invalid status code %d (%s)", resp.StatusCode, resp.Status)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	return body, nil
+	return meters, nil
 }
 
-func isMaintenanceError(resp *http.Response) bool {
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		zap.L().Error("failed to read api error response", zap.Error(err))
-		return false
-	}
-	maintenanceResponse := &struct {
-		IsOnline *bool `json:"IsOnline"`
-	}{}
-	err = json.Unmarshal(respBytes, maintenanceResponse)
-	if err != nil {
-		return false
-	}
+const maxResponseBytes = 32 << 20
 
-	return maintenanceResponse.IsOnline != nil && !*maintenanceResponse.IsOnline
+func (o APIClient) doRequest(method, endpoint string, request interface{}, accept string) ([]byte, error) {
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var payload io.Reader
+	if request != nil {
+		data, err := json.Marshal(request)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling request: %w", err)
+		}
+		payload = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, payload)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	var token string
+	if provider, ok := o.tokenProvider.(interface {
+		GetTokenContext(context.Context) (string, error)
+	}); ok {
+		token, err = provider.GetTokenContext(ctx)
+	} else {
+		token, err = o.tokenProvider.GetToken()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting access token: %w", err)
+	}
+	if token == "" {
+		return nil, fmt.Errorf("empty access token")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", accept)
+	if request != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	zap.L().Debug("HTTP request", zap.String("method", method), zap.String("path", req.URL.Path))
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("performing HTTP request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading HTTP response: %w", err)
+	}
+	if len(body) > maxResponseBytes {
+		return nil, fmt.Errorf("HTTP response exceeds %d bytes", maxResponseBytes)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var maintenance struct {
+			IsOnline *bool `json:"IsOnline"`
+		}
+		if json.Unmarshal(body, &maintenance) == nil && maintenance.IsOnline != nil && !*maintenance.IsOnline {
+			return nil, ErrMaintenance
+		}
+		return nil, fmt.Errorf("HTTP request failed: status %d", resp.StatusCode)
+	}
+	return body, nil
 }

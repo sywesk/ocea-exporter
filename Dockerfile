@@ -1,4 +1,4 @@
-FROM golang:1.20-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 
 WORKDIR /app
 
@@ -7,9 +7,9 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 
 COPY . .
-RUN go build -v -o /app/ocea-exporter ./cmd/ocea-exporter
+RUN CGO_ENABLED=0 go build -trimpath -o /app/ocea-exporter ./cmd/ocea-exporter
 
-FROM alpine:latest
+FROM alpine:3.24
 
 RUN apk --no-cache add ca-certificates
 

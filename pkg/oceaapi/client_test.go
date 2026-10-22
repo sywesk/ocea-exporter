@@ -1,12 +1,15 @@
 package oceaapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,5 +105,67 @@ func TestHTTPFailures(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestRequestCancellationReachesHTTPTransport(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-r.Context().Done() }))
+	defer server.Close()
+	defer server.CloseClientConnections()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := NewClient(testTokenProvider{}).WithContext(ctx)
+	done := make(chan error, 1)
+	go func() { done <- client.do("GET", server.URL, nil, nil) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request was not sent")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected cancellation, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HTTP request ignored cancellation")
+	}
+}
+
+type responseTransport func(*http.Request) (*http.Response, error)
+
+func (f responseTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestOversizedHTTPResponseIsRejected(t *testing.T) {
+	client := NewClient(testTokenProvider{})
+	client.client.Transport = responseTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(strings.Repeat("x", maxResponseBytes+1))), Header: make(http.Header)}, nil
+	})
+	if err := client.do("GET", "https://example.invalid", nil, nil); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("response limit not enforced: %v", err)
+	}
+}
+
+func TestOwnerMissingIndexesAreNotZeroReadings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/appareils"):
+			fmt.Fprint(w, `[{"id":"zero","pdsId":"pds"}]`)
+		case strings.HasSuffix(r.URL.Path, "/token"):
+			fmt.Fprint(w, `"demand-token"`)
+		case strings.HasSuffix(r.URL.Path, "/demande"):
+			fmt.Fprint(w, `[{"appareilId":"zero","numeroCompteurAppareil":"serial","fluide":"EauFroide","valeurIndex":0},{"appareilId":"null","valeurIndex":null},{"appareilId":"missing"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := NewClient(testTokenProvider{})
+	client.client.Transport = redirectTransport{server.Listener.Addr().String()}
+	devices, err := client.GetDevices("home", time.Now())
+	if err != nil || len(devices) != 1 || devices[0].AppareilID != "zero" || devices[0].NumeroCompteurAppareil != "serial" || devices[0].Fluide != FluidColdWater || devices[0].ValeurIndex != 0 {
+		t.Fatalf("missing index confused with zero: %+v, %v", devices, err)
 	}
 }
