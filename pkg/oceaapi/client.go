@@ -128,16 +128,29 @@ func (o APIClient) GetDevices(localID string, statementDate time.Time) ([]Device
 }
 
 func (o APIClient) do(method, url string, request, response interface{}) error {
+	body, err := o.doRequest(method, url, request, "application/json")
+	if err != nil {
+		return err
+	}
+	if response != nil {
+		if err := json.Unmarshal(body, response); err != nil {
+			return fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+	}
+	return nil
+}
+
+func (o APIClient) doRequest(method, url string, request interface{}, accept string) ([]byte, error) {
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create new request: %w", err)
+		return nil, fmt.Errorf("failed to create new request: %w", err)
 	}
 	zap.L().Debug("HTTP request", zap.String("url", url), zap.String("method", method))
 
 	if request != nil {
 		reqBytes, err := json.Marshal(request)
 		if err != nil {
-			return fmt.Errorf("failed to marshal request: %w", err)
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
 		}
 
 		req.Body = io.NopCloser(bytes.NewReader(reqBytes))
@@ -146,42 +159,32 @@ func (o APIClient) do(method, url string, request, response interface{}) error {
 
 	token, err := o.tokenProvider.GetToken()
 	if err != nil {
-		return fmt.Errorf("failed to get token from provider: %w", err)
+		return nil, fmt.Errorf("failed to get token from provider: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	if response != nil {
-		req.Header.Set("Accept", "application/json")
-	}
+	req.Header.Set("Accept", accept)
 
 	resp, err := o.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to do HTTP request: %w", err)
+		return nil, fmt.Errorf("failed to do HTTP request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	zap.L().Debug("HTTP response status", zap.String("status", resp.Status))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if isMaintenanceError(resp) {
-			return ErrMaintenance
+			return nil, ErrMaintenance
 		}
-		return fmt.Errorf("HTTP request failed: invalid status code %d (%s)", resp.StatusCode, resp.Status)
+		return nil, fmt.Errorf("HTTP request failed: invalid status code %d (%s)", resp.StatusCode, resp.Status)
 	}
 
-	if response != nil {
-		respBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("failed to read all response bytes: %w", err)
-		}
-
-		err = json.Unmarshal(respBytes, response)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal response: %w", err)
-		}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-
-	return nil
+	return body, nil
 }
 
 func isMaintenanceError(resp *http.Response) bool {

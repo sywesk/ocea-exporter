@@ -142,7 +142,7 @@ func (c *CounterFetcher) updateCounterMetrics() {
 }
 
 func (c *CounterFetcher) fetchCounters() error {
-	devices, err := c.fetchDevices(c.state.AccountData.Local.Local.ID, false)
+	devices, err := c.fetchDevices(c.state.AccountData.Local.Local.ID, c.state.AccountData.Resident.Occupations[0].TypeOccupation, false)
 	if err != nil {
 		return fmt.Errorf("fetching devices: %v", err)
 	}
@@ -198,7 +198,7 @@ func (c *CounterFetcher) fetchInitialState() error {
 	}
 
 	// Fetch all devices and force a full retrieval.
-	devices, err := c.fetchDevices(localID, true)
+	devices, err := c.fetchDevices(localID, resident.Occupations[0].TypeOccupation, true)
 	if err != nil {
 		return fmt.Errorf("failed to reset counters: %w", err)
 	}
@@ -218,7 +218,10 @@ func (c *CounterFetcher) fetchInitialState() error {
 // It does so by calling the API, but there's a catch: if a counter hasn't reported yet for the current day,
 // it will be missing from the response. Thus, we need to go back 1 day earlier to get the last. This behavior can
 // be forced using the forceFullRetrieval parameter.
-func (c *CounterFetcher) fetchDevices(localID string, forceFullRetrieval bool) ([]oceaapi.Device, error) {
+func (c *CounterFetcher) fetchDevices(localID, occupation string, forceFullRetrieval bool) ([]oceaapi.Device, error) {
+	if occupation == "Occupant" {
+		return c.apiClient.GetOccupantDevices(localID, time.Now())
+	}
 	devices, err := c.apiClient.GetDevices(localID, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get devices: %w", err)

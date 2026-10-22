@@ -4,15 +4,19 @@ ocea-exporter is a tool that exports fluid consumption (hot water, cold water, h
 
 It currently supports prometheus and home assistant by using MQTT & auto-discovery.
 
-The meter-reading flow uses an owner (`Proprietaire`) account. It discovers the
+For an owner (`Proprietaire`) account, the meter-reading flow discovers the
 meters through `GET /local/{id}/appareils`, requests a dated token through
 `GET /local/{id}/token`, then sends `localId`, `token`, and `pdsIds` to
 `POST /local/demande`. Missing readings for today are back-filled from yesterday,
 while keeping today's readings when available.
 The login-page parser accepts whitespace around its embedded settings fields.
 
-Occupant accounts use a separate period-based Excel export at
-`POST /local/demande/export`; this exporter does not currently parse that format.
+Occupant (`Occupant`) accounts are detected from the resident's occupation and
+use the period-based Excel export at `POST /local/demande/export`. The exporter
+requests yesterday through today and keeps the latest available index per meter.
+Empty indexes are skipped, while actual zero readings are preserved. Worksheet
+meter serials are matched to the API's device IDs, and fluid names are normalized
+to the same values used by owner accounts. Excel dates have daily precision.
 
 ## Configuration
 
@@ -62,6 +66,8 @@ go run ./cmd/ocea-exporter ./config.local.yaml
 The example enables Prometheus at `http://127.0.0.1:9001/metrics` and disables MQTT.
 `config.local.yaml` and `state.local.json` are ignored by Git. Use this separate
 state file for testing so that an existing deployment's state is preserved.
+For an occupant-account check, use `config.local.occupant.yaml` with
+`state_file_path: ./state.local.occupant.json`. Both are also ignored by Git.
 
 ### Example docker-compose file
 
